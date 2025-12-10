@@ -48,13 +48,13 @@ server.py (FastAPI)
   ├─ Request validation (Pydantic models)
   ├─ Logging & performance tracking
   ↓
-bedrock.py OR openai_compatible.py
+bedrock.py OR openai_compatible.py OR council.py
   ├─ Message translation (Claude ↔ Provider format)
   ├─ Tool handling (function calling schema)
   ├─ API call with error handling
   ├─ Response translation
   ↓
-AWS Bedrock / OpenAI / Gemini / Local LLM
+AWS Bedrock / OpenAI / Gemini / Local LLM / Multi-Model Council
 ```
 
 ### Core Source Files
@@ -86,6 +86,15 @@ AWS Bedrock / OpenAI / Gemini / Local LLM
 - Token estimation (with character-based fallback)
 - Retry strategy with exponential backoff
 
+**`src/claudecodex/council.py`** (~500 lines)
+- LLM Council: Multi-model fusion inspired by Karpathy's llm-council
+- 3-stage consensus mechanism:
+  1. **Stage 1 (RESPOND)**: Query all council members in parallel
+  2. **Stage 2 (REVIEW)**: Anonymous peer review and ranking
+  3. **Stage 3 (SYNTHESIZE)**: Chairman synthesizes final response
+- Configurable modes: `full` (all stages), `fast` (skip review), `race` (first wins)
+- Supports mixed providers: Gemini, OpenAI, Bedrock, local models in one council
+
 **`src/claudecodex/models.py`** (114 lines)
 - Pydantic models for Claude API schema
 - Request models: `MessagesRequest`, `TokenCountRequest`, `Message`, `Tool`
@@ -103,9 +112,10 @@ AWS Bedrock / OpenAI / Gemini / Local LLM
 ### Backend Selection Logic
 
 Priority order (in `server.py:get_backend_type()`):
-1. If `LLM_BACKEND` env var is set → use that backend
-2. If `OPENAI_API_KEY` env var exists → use `openai_compatible`
-3. Otherwise → use `bedrock`
+1. If `LLM_BACKEND` env var is set → use that backend (`bedrock`, `openai_compatible`, or `council`)
+2. If `COUNCIL_MODELS` env var exists → use `council`
+3. If `OPENAICOMPATIBLE_API_KEY` env var exists → use `openai_compatible`
+4. Otherwise → use `bedrock`
 
 ### Translation Layer Pattern
 
@@ -141,6 +151,16 @@ BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-*  # Model ID (optional, auto-dete
 OPENAI_API_KEY=your-key          # Required API key
 OPENAI_BASE_URL=endpoint-url     # Provider-specific endpoint
 OPENAI_MODEL=model-name          # Model identifier (default: gemini-2.0-flash)
+```
+
+**LLM Council** (for council backend)
+```bash
+COUNCIL_MODELS=gemini-2.0-flash,gpt-4o,claude-sonnet-4  # Comma-separated model list
+COUNCIL_CHAIRMAN=claude-sonnet-4     # Model for final synthesis (default: first in list)
+COUNCIL_MODE=full                    # full | fast | race (default: full)
+COUNCIL_TIMEOUT=120                  # Timeout per model in seconds (default: 120)
+GEMINI_API_KEY=your-key              # API key for Gemini models
+OPENAI_API_KEY=your-key              # API key for OpenAI models
 ```
 
 **Claude Code Integration**
