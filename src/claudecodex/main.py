@@ -7,7 +7,7 @@ The server provides Claude API compatibility for multiple LLM backends.
 
 Usage:
     python main.py
-    
+
 The server will start on http://0.0.0.0:8082 by default.
 
 Features:
@@ -34,10 +34,10 @@ def main():
     """
     # Load environment variables from .env file
     load_dotenv()
-    
+
     # Get port from environment variable, fallback to 8082
     port = int(os.getenv("SERVER_PORT", 8082))
-    
+
     # Setup logging for main entry point
     logging.basicConfig(level=logging.INFO)
 
@@ -45,14 +45,9 @@ def main():
     backend_info = get_backend_info()
     print(f"Claude Codex starting on http://localhost:{port}")
     print(f"Backend: {backend_info['backend']} | Model: {backend_info['model']}")
-    
+
     # Start the server
-    uvicorn.run(
-        app, 
-        host="0.0.0.0", 
-        port=port,
-        log_level="info"
-    )
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
 
 
 if __name__ == "__main__":

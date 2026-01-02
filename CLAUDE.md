@@ -104,8 +104,7 @@ AWS Bedrock / OpenAI / Gemini / Local LLM
 
 Priority order (in `server.py:get_backend_type()`):
 1. If `LLM_BACKEND` env var is set → use that backend
-2. If `OPENAI_API_KEY` env var exists → use `openai_compatible`
-3. Otherwise → use `bedrock`
+2. Otherwise → default to `openai_compatible`
 
 ### Translation Layer Pattern
 
@@ -133,14 +132,14 @@ SERVER_PORT=8082                 # Server port (default: 8082)
 ```bash
 AWS_PROFILE=saml                 # AWS profile name (default: saml)
 AWS_DEFAULT_REGION=us-east-1     # AWS region (default: us-east-1)
-BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-*  # Model ID (optional, auto-detected)
+BEDROCK_MODEL_ID=us.anthropic.claude-haiku-4-5-20251001-v1:0  # Model ID (optional)
 ```
 
 **OpenAI-Compatible** (for openai_compatible backend)
 ```bash
-OPENAI_API_KEY=your-key          # Required API key
-OPENAI_BASE_URL=endpoint-url     # Provider-specific endpoint
-OPENAI_MODEL=model-name          # Model identifier (default: gemini-2.0-flash)
+OPENAICOMPATIBLE_API_KEY=your-key          # Required API key
+OPENAICOMPATIBLE_BASE_URL=endpoint-url     # Provider-specific endpoint (default: Google Gemini)
+OPENAI_MODEL=model-name                    # Model identifier (default: gemini-2.0-flash)
 ```
 
 **Claude Code Integration**

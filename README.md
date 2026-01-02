@@ -177,7 +177,7 @@ SERVER_PORT=8082                       # default: 8082
 # Bedrock backend
 AWS_PROFILE=your-profile               # default: saml
 AWS_DEFAULT_REGION=us-east-1           # default: us-east-1
-BEDROCK_MODEL_ID=model-id              # default: us.anthropic.claude-sonnet-4-*
+BEDROCK_MODEL_ID=model-id              # default: us.anthropic.claude-haiku-4-5-20251001-v1:0
 
 # OpenAI-compatible backend
 OPENAICOMPATIBLE_API_KEY=your-key      # required for openai_compatible
