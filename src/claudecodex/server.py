@@ -44,11 +44,8 @@ def get_backend_type() -> BackendType:
             raise ValueError(f"Unsupported LLM backend: {backend}. Must be 'bedrock' or 'openai_compatible'")
         return backend
 
-    # Auto-detect backend based on available API keys (default to openai_compatible)
-    if os.environ.get("OPENAICOMPATIBLE_API_KEY"):
-        return "openai_compatible"
-    else:
-        return "bedrock"
+    # Default to openai_compatible backend
+    return "openai_compatible"
 
 
 def call_llm_service(request: MessagesRequest) -> MessagesResponse:
