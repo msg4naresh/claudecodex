@@ -51,16 +51,20 @@ That's it! Claude Code will now send requests through your proxy.
 └─────────────┘            POST /v1/messages            │   (server.py)   │
                                                         └─────────────────┘
                                                                   │
-                                                    Auto-Detection │
-                                                   (env vars/keys) │
+                                                      get_backend() │
+                                                    (Protocol-based) │
                                                                   │
                            ┌──────────────────────────────────────┼──────────────────────────────────────┐
                            │                                      │                                      │
                            ▼                                      ▼                                      ▼
                  ┌─────────────────┐                   ┌─────────────────┐                   ┌─────────────────┐
-                 │  AWS Bedrock    │                   │OpenAI Compatible│                   │  Future Backend │
-                 │  (bedrock.py)   │                   │  (openai_compat │                   │                 │
-                 │                 │                   │      .py)       │                   │                 │
+                 │BedrockBackend   │                   │OpenAICompatible │                   │  Your Custom    │
+                 │  (bedrock.py)   │                   │    Backend      │                   │    Backend      │
+                 │                 │                   │(openai_compat.py│                   │ (LLMBackend)    │
+                 │Implements:      │                   │                 │                   │                 │
+                 │ LLMBackend      │                   │Implements:      │                   │Implements:      │
+                 │  Protocol       │                   │ LLMBackend      │                   │ LLMBackend      │
+                 │                 │                   │  Protocol       │                   │  Protocol       │
                  └─────────────────┘                   └─────────────────┘                   └─────────────────┘
                            │                                      │                                      │
                            ▼                                      ▼                                      ▼
@@ -76,9 +80,10 @@ That's it! Claude Code will now send requests through your proxy.
 
 **How it works:**
 1. Claude Code sends requests to Claude Codex (localhost:8082)
-2. Claude Codex auto-detects backend (Bedrock vs OpenAI-compatible)
-3. Claude Codex translates Claude API ↔ Provider API formats
-4. Response flows back to Claude Code
+2. `server.py` routes to backend instance via `get_backend()`
+3. Backend implements `LLMBackend` protocol with `completion()` and `count_tokens()` methods
+4. Each backend translates Claude API ↔ Provider API formats
+5. Response flows back to Claude Code
 
 **Backend Support:**
 - **AWS Bedrock**: Claude Sonnet/Haiku/Opus (native format)
@@ -97,9 +102,51 @@ That's it! Claude Code will now send requests through your proxy.
 
 ### Secondary: LLM Backend Flexibility
 - **Connect any LLM** - swap between Claude, GPT-4, Gemini, local models instantly
-- **Extend time limits** - run longer workflows by routing through your own infrastructure  
-- **Add new backends** - simple translator pattern makes adding new LLMs easy
+- **Extend time limits** - run longer workflows by routing through your own infrastructure
+- **Add new backends** - protocol-based design makes adding new LLMs straightforward
 - **Custom model access** - use fine-tuned models or experimental endpoints
+
+### Adding a New Backend
+
+The protocol-based architecture makes it easy to add new LLM providers:
+
+1. **Create a new backend file** (e.g., `src/claudecodex/custom_backend.py`)
+2. **Implement the `LLMBackend` protocol**:
+   ```python
+   from claudecodex.backend import LLMBackend
+   from claudecodex.models import MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse
+
+   class CustomBackend:
+       """Your custom LLM backend."""
+
+       def completion(self, request: MessagesRequest) -> MessagesResponse:
+           # 1. Convert Claude format to your provider's format
+           # 2. Call your provider's API
+           # 3. Convert response back to Claude format
+           pass
+
+       def count_tokens(self, request: TokenCountRequest) -> TokenCountResponse:
+           # Count tokens for your provider
+           pass
+   ```
+
+3. **Register in `server.py`**:
+   ```python
+   from claudecodex.custom_backend import CustomBackend
+
+   def get_backend() -> LLMBackend:
+       backend_type = get_backend_type()
+
+       if backend_type == "bedrock":
+           return BedrockBackend()
+       elif backend_type == "openai_compatible":
+           return OpenAICompatibleBackend()
+       elif backend_type == "custom":
+           return CustomBackend()
+       # ...
+   ```
+
+Reference the existing `BedrockBackend` and `OpenAICompatibleBackend` implementations for translation patterns.
 
 ## Why Build This?
 
@@ -196,6 +243,7 @@ ANTHROPIC_BASE_URL=http://localhost:8082
 │   ├── __init__.py                   # Package info
 │   ├── main.py                       # Entry point
 │   ├── server.py                     # FastAPI server & routing
+│   ├── backend.py                    # LLMBackend protocol definition
 │   ├── bedrock.py                    # AWS Bedrock backend
 │   ├── openai_compatible.py          # OpenAI-compatible backend
 │   ├── models.py                     # Pydantic models
@@ -212,15 +260,22 @@ ANTHROPIC_BASE_URL=http://localhost:8082
 └── README.md                         # This file
 ```
 
-**Simple Architecture**: Core functionality organized in focused files
+**Protocol-Based Architecture**: Extensible design makes adding new backends easy
+- `backend.py` - `LLMBackend` protocol interface
 - `server.py` - FastAPI server with backend routing and API endpoints
-- `bedrock.py` - AWS Bedrock integration with Claude API translation
-- `openai_compatible.py` - OpenAI-compatible API integration (OpenAI, Gemini, local models)
+- `bedrock.py` - AWS Bedrock backend implementing `LLMBackend`
+- `openai_compatible.py` - OpenAI-compatible backend implementing `LLMBackend`
 
 ## API Functions
 
+### Backend Protocol (`backend.py`)
+- `LLMBackend` - Protocol defining backend interface:
+  - `completion(request)` - Get completion from LLM
+  - `count_tokens(request)` - Count tokens for a request
+
 ### Server Functions (`server.py`)
-- `get_backend_type()` - Determine backend from environment  
+- `get_backend_type()` - Determine backend from environment
+- `get_backend()` - Get backend instance (returns `LLMBackend`)
 - `call_llm_service(request)` - Route requests to backends
 - `count_llm_tokens(request)` - Token counting
 - `get_backend_info()` - Runtime configuration info
@@ -229,6 +284,9 @@ ANTHROPIC_BASE_URL=http://localhost:8082
 - `health()` - `/health` endpoint
 
 ### Bedrock Backend (`bedrock.py`)
+- `BedrockBackend` - Backend class implementing `LLMBackend`
+  - `completion(request)` - Get completion from AWS Bedrock
+  - `count_tokens(request)` - Count tokens for Bedrock
 - `call_bedrock_converse(request)` - AWS Bedrock API calls
 - `count_request_tokens(request)` - Bedrock token counting
 - `get_bedrock_client()` - AWS client setup
@@ -236,6 +294,9 @@ ANTHROPIC_BASE_URL=http://localhost:8082
 - `create_claude_response()` - Bedrock → Claude format
 
 ### OpenAI-Compatible Backend (`openai_compatible.py`)
+- `OpenAICompatibleBackend` - Backend class implementing `LLMBackend`
+  - `completion(request)` - Get completion from OpenAI-compatible provider
+  - `count_tokens(request)` - Count tokens for OpenAI
 - `call_openai_compatible_chat(request)` - OpenAI API calls
 - `count_openai_tokens(request)` - Token estimation
 - `get_openai_compatible_client()` - HTTP session setup
