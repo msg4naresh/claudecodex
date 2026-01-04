@@ -149,25 +149,45 @@ name = "claudecodex"
 version = "1.0.0"
 source = { editable = "." }
 dependencies = [
+    { name = "annotated-doc" },
     { name = "boto3" },
+    { name = "charset-normalizer" },
     { name = "fastapi", extra = ["standard"] },
+    { name = "httpx" },
+    { name = "idna" },
+    { name = "iniconfig" },
+    { name = "packaging" },
+    { name = "pluggy" },
     { name = "pydantic" },
+    { name = "pygments" },
     { name = "pytest" },
     { name = "python-dotenv" },
     { name = "requests" },
     { name = "ruff" },
+    { name = "starlette" },
+    { name = "urllib3" },
     { name = "uv" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "annotated-doc" },
     { name = "boto3" },
+    { name = "charset-normalizer" },
     { name = "fastapi", extras = ["standard"] },
+    { name = "httpx" },
+    { name = "idna" },
+    { name = "iniconfig" },
+    { name = "packaging" },
+    { name = "pluggy" },
     { name = "pydantic" },
+    { name = "pygments" },
     { name = "pytest" },
     { name = "python-dotenv" },
     { name = "requests" },
     { name = "ruff" },
+    { name = "starlette" },
+    { name = "urllib3" },
     { name = "uv" },
 ]
 
