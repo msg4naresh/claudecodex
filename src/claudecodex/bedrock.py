@@ -1,5 +1,5 @@
 """
-AWS Bedrock backend implementation for Claude Codex.
+AWS Bedrock provider implementation for Claude Codex.
 
 This module consolidates all Bedrock-related functionality:
 - AWS Bedrock Runtime client initialization and configuration
@@ -365,11 +365,11 @@ def count_request_tokens(request: TokenCountRequest) -> TokenCountResponse:
         raise HTTPException(status_code=500, detail=f"Error counting tokens: {str(e)}")
 
 
-# === BACKEND CLASS ===
+# === PROVIDER CLASS ===
 
 
-class BedrockBackend:
-    """AWS Bedrock backend implementation."""
+class BedrockProvider:
+    """AWS Bedrock provider implementation."""
 
     def completion(self, request: MessagesRequest) -> MessagesResponse:
         """Get completion from AWS Bedrock (converts to Bedrock Converse API format)."""

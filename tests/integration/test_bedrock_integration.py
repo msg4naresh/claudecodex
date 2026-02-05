@@ -333,7 +333,6 @@ def test_log_files_generation():
         # Verify log files exist and have content
         log_files = [
             Path(test_instance.test_log_dir) / "requests.log",
-            Path(test_instance.test_log_dir) / "structured.jsonl"
         ]
         
         for log_file in log_files:

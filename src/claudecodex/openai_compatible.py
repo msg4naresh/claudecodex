@@ -1,5 +1,5 @@
 """
-OpenAI-compatible backend implementation for Claude Codex.
+OpenAI-compatible provider implementation for Claude Codex.
 
 This module consolidates all OpenAI-compatible functionality for providers implementing
 the OpenAI Chat Completions API standard, including:
@@ -37,7 +37,7 @@ from claudecodex.models import (
     ContentBlockToolUse,
     Usage,
     TokenCountRequest,
-    TokenCountResponse
+    TokenCountResponse,
 )
 
 
@@ -54,12 +54,12 @@ def get_openai_compatible_client():
         if not api_key:
             raise HTTPException(
                 status_code=500,
-                detail="OPENAICOMPATIBLE_API_KEY environment variable is required"
+                detail="OPENAICOMPATIBLE_API_KEY environment variable is required",
             )
 
         base_url = os.environ.get(
             "OPENAICOMPATIBLE_BASE_URL",
-            "https://generativelanguage.googleapis.com/v1beta/openai"
+            "https://generativelanguage.googleapis.com/v1beta/openai",
         )
 
         # Create session with retry strategy
@@ -81,7 +81,7 @@ def get_openai_compatible_client():
             {
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
-                "User-Agent": "claude-bedrock-proxy/1.0.0"
+                "User-Agent": "claude-bedrock-proxy/1.0.0",
             }
         )
 
@@ -95,7 +95,7 @@ def get_openai_compatible_client():
             raise
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to create OpenAI-compatible client: {str(e)}"
+            detail=f"Failed to create OpenAI-compatible client: {str(e)}",
         )
 
 
@@ -108,7 +108,7 @@ def get_openai_compatible_base_url() -> str:
     """Get base URL from environment variables."""
     return os.environ.get(
         "OPENAICOMPATIBLE_BASE_URL",
-        "https://generativelanguage.googleapis.com/v1beta/openai"
+        "https://generativelanguage.googleapis.com/v1beta/openai",
     )
 
 
@@ -183,8 +183,8 @@ def convert_to_openai_messages(request: MessagesRequest) -> List[Dict[str, Any]]
                                         "name": block.name,
                                         "arguments": str(block.input)
                                         if isinstance(block.input, dict)
-                                        else block.input
-                                    }
+                                        else block.input,
+                                    },
                                 }
                             )
                         elif block.type == "tool_result":
@@ -198,7 +198,7 @@ def convert_to_openai_messages(request: MessagesRequest) -> List[Dict[str, Any]]
                                 {
                                     "role": "tool",
                                     "content": content_text,
-                                    "tool_call_id": block.tool_use_id
+                                    "tool_call_id": block.tool_use_id,
                                 }
                             )
 
@@ -229,8 +229,8 @@ def convert_tools_to_openai(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]
             "function": {
                 "name": tool.name,
                 "description": tool.description or "",
-                "parameters": tool.input_schema
-            }
+                "parameters": tool.input_schema,
+            },
         }
         openai_tools.append(openai_tool)
 
@@ -314,7 +314,7 @@ def create_claude_response_from_openai(
                         type="tool_use",
                         id=tool_call["id"],
                         name=function["name"],
-                        input=arguments
+                        input=arguments,
                     )
                 )
 
@@ -343,8 +343,8 @@ def create_claude_response_from_openai(
         stop_reason=stop_reason,
         usage=Usage(
             input_tokens=usage_info.get("prompt_tokens", 0),
-            output_tokens=usage_info.get("completion_tokens", 0)
-        )
+            output_tokens=usage_info.get("completion_tokens", 0),
+        ),
     )
 
 
@@ -366,7 +366,7 @@ def call_openai_compatible_chat(request: MessagesRequest) -> MessagesResponse:
             "model": model_id,
             "messages": openai_messages,
             "max_tokens": request.max_tokens,
-            "temperature": request.temperature or 0.7
+            "temperature": request.temperature or 0.7,
         }
 
         # Add optional parameters
@@ -383,7 +383,7 @@ def call_openai_compatible_chat(request: MessagesRequest) -> MessagesResponse:
                 if request.tool_choice.get("type") == "tool":
                     payload["tool_choice"] = {
                         "type": "function",
-                        "function": {"name": request.tool_choice["name"]}
+                        "function": {"name": request.tool_choice["name"]},
                     }
                 elif request.tool_choice.get("type") == "auto":
                     payload["tool_choice"] = "auto"
@@ -482,11 +482,11 @@ def count_openai_tokens(request: TokenCountRequest) -> TokenCountResponse:
         raise HTTPException(status_code=500, detail=f"Error counting tokens: {str(e)}")
 
 
-# === BACKEND CLASS ===
+# === PROVIDER CLASS ===
 
 
-class OpenAICompatibleBackend:
-    """OpenAI-compatible backend implementation (OpenAI, Gemini, OpenRouter, etc.)."""
+class OpenAICompatibleProvider:
+    """OpenAI-compatible provider implementation (OpenAI, Gemini, OpenRouter, etc.)."""
 
     def completion(self, request: MessagesRequest) -> MessagesResponse:
         """Get completion from OpenAI-compatible provider (converts to OpenAI Chat Completions format)."""

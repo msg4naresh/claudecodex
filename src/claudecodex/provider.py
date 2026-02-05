@@ -1,5 +1,5 @@
 """
-Backend interface for LLM providers.
+Provider interface for LLM providers.
 """
 
 from typing import Protocol
@@ -11,11 +11,11 @@ from claudecodex.models import (
 )
 
 
-class LLMBackend(Protocol):
+class LLMProvider(Protocol):
     """
-    Backend protocol for LLM providers.
+    Provider protocol for LLM providers.
 
-    Each backend handles:
+    Each provider handles:
     1. Converting Claude Code requests to provider-specific format
     2. Calling the provider API
     3. Converting provider responses back to Claude Code format
@@ -24,7 +24,7 @@ class LLMBackend(Protocol):
 
     def completion(self, request: MessagesRequest) -> MessagesResponse:
         """
-        Get completion from LLM backend.
+        Get completion from LLM provider.
 
         Internally handles format conversion:
         - Claude Code MessagesRequest → Provider format

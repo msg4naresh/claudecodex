@@ -32,7 +32,7 @@ load_dotenv()
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
 
 # Import components for direct testing
-from claudecodex.server import call_llm_service, get_backend_info
+from claudecodex.server import call_llm_service, get_provider_info
 from claudecodex.models import MessagesRequest, Message, Tool
 from claudecodex.openai_compatible import call_openai_compatible_chat
 
@@ -85,7 +85,7 @@ class GeminiServerIntegrationTest:
         
         # Set environment for Gemini testing
         env = os.environ.copy()
-        env['LLM_BACKEND'] = 'openai_compatible'
+        env['LLM_PROVIDER'] = 'openai_compatible'
         env['OPENAICOMPATIBLE_API_KEY'] = os.environ.get('OPENAICOMPATIBLE_API_KEY', 'dummy')
         env['OPENAICOMPATIBLE_BASE_URL'] = OPENAI_BASE_URL
         env['OPENAI_MODEL'] = self.model
@@ -107,7 +107,7 @@ class GeminiServerIntegrationTest:
                 if response.status_code == 200:
                     data = response.json()
                     print(f"✅ Server started successfully")
-                    print(f"📊 Backend: {data.get('backend')}, Model: {data.get('model')}")
+                    print(f"📊 Provider: {data.get('provider')}, Model: {data.get('model')}")
                     return
             except requests.exceptions.RequestException:
                 time.sleep(1)
@@ -340,7 +340,7 @@ def test_gemini_server_startup_shutdown():
         response = requests.get(f"{SERVER_URL}/health")
         assert response.status_code == 200
         data = response.json()
-        assert data["backend"] == "openai_compatible"
+        assert data["provider"] == "openai_compatible"
         assert "gemini" in data["model"].lower()
         
         print("✅ Gemini server startup/shutdown test passed")
@@ -542,17 +542,17 @@ def test_gemini_configuration_validation():
     original_env = os.environ.copy()
 
     try:
-        os.environ['LLM_BACKEND'] = 'openai_compatible'
+        os.environ['LLM_PROVIDER'] = 'openai_compatible'
         os.environ['OPENAICOMPATIBLE_API_KEY'] = 'test-gemini-key'
         os.environ['OPENAICOMPATIBLE_BASE_URL'] = OPENAI_BASE_URL
         os.environ['OPENAI_MODEL'] = 'gemini-2.0-flash'
-        
-        backend_info = get_backend_info()
-        
-        assert backend_info["backend"] == "openai_compatible"
-        assert backend_info["model"] == "gemini-2.0-flash"
-        assert OPENAI_BASE_URL in backend_info["base_url"]
-        assert backend_info["api_key_configured"] == True
+
+        provider_info = get_provider_info()
+
+        assert provider_info["provider"] == "openai_compatible"
+        assert provider_info["model"] == "gemini-2.0-flash"
+        assert OPENAI_BASE_URL in provider_info["base_url"]
+        assert provider_info["api_key_configured"] == True
         
         print("✅ Gemini configuration validation passed")
         
@@ -569,7 +569,7 @@ def test_gemini_direct_service_call():
     original_env = os.environ.copy()
 
     try:
-        os.environ['LLM_BACKEND'] = 'openai_compatible'
+        os.environ['LLM_PROVIDER'] = 'openai_compatible'
         os.environ['OPENAICOMPATIBLE_API_KEY'] = os.environ.get('OPENAICOMPATIBLE_API_KEY')
         os.environ['OPENAICOMPATIBLE_BASE_URL'] = OPENAI_BASE_URL
         os.environ['OPENAI_MODEL'] = 'gemini-2.0-flash'

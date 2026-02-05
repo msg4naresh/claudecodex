@@ -2,7 +2,7 @@
 Complete FastAPI server for Claude Codex.
 
 Single hackable file containing all server functionality:
-- Backend routing and auto-detection (Bedrock vs OpenAI-compatible)
+- Provider routing and auto-detection (Bedrock vs OpenAI-compatible)
 - Claude API compatible endpoints (/v1/messages, /v1/messages/count_tokens)
 - FastAPI application with CORS middleware
 - Request/response logging and monitoring
@@ -25,106 +25,108 @@ from claudecodex.models import (
     TokenCountRequest,
     TokenCountResponse
 )
-from claudecodex.backend import LLMBackend
-from claudecodex.bedrock import BedrockBackend, get_model_id
+from claudecodex.provider import LLMProvider
+from claudecodex.bedrock import BedrockProvider, get_model_id
 from claudecodex.openai_compatible import (
-    OpenAICompatibleBackend,
+    OpenAICompatibleProvider,
     get_openai_compatible_model,
     get_openai_compatible_base_url
 )
 from claudecodex.logging_config import setup_logging, log_request_response
 
 
-# === BACKEND ROUTING ===
+# === PROVIDER ROUTING ===
 
 logger = logging.getLogger(__name__)
-BackendType = Literal["bedrock", "openai_compatible"]
+ProviderType = Literal["bedrock", "openai_compatible"]
 
 
-def get_backend_type() -> BackendType:
-    """Get configured backend type from environment variables."""
-    # Check for explicit backend selection first
-    explicit_backend = os.environ.get("LLM_BACKEND")
-    if explicit_backend:
-        backend = explicit_backend.lower()
-        if backend not in ["bedrock", "openai_compatible"]:
+def get_provider_type() -> ProviderType:
+    """Get configured provider type from environment variables."""
+    # Check for explicit provider selection first
+    explicit_provider = os.environ.get("LLM_PROVIDER")
+    if explicit_provider:
+        provider = explicit_provider.lower()
+        if provider not in ["bedrock", "openai_compatible"]:
             raise ValueError(
-                f"Unsupported LLM backend: {backend}. Must be 'bedrock' or 'openai_compatible'"
+                f"Unsupported LLM provider: {provider}. Must be 'bedrock' or 'openai_compatible'"
             )
-        return backend
+        return provider
 
-    # Auto-detect backend based on available API keys (default to openai_compatible)
+    # Auto-detect provider based on available API keys (default to openai_compatible)
     if os.environ.get("OPENAICOMPATIBLE_API_KEY"):
         return "openai_compatible"
     else:
         return "bedrock"
 
 
-def get_backend() -> LLMBackend:
-    """Get backend instance based on configuration."""
-    backend_type = get_backend_type()
+def get_provider() -> LLMProvider:
+    """Get provider instance based on configuration."""
+    provider_type = get_provider_type()
 
-    if backend_type == "bedrock":
-        return BedrockBackend()
-    elif backend_type == "openai_compatible":
-        return OpenAICompatibleBackend()
+    if provider_type == "bedrock":
+        return BedrockProvider()
+    elif provider_type == "openai_compatible":
+        return OpenAICompatibleProvider()
     else:
-        raise ValueError(f"Unsupported backend: {backend_type}")
+        raise ValueError(f"Unsupported provider: {provider_type}")
 
 
 def call_llm_service(request: MessagesRequest) -> MessagesResponse:
-    """Route request to appropriate backend service."""
-    backend = get_backend()
-    logger.debug(f"Routing request to {get_backend_type()} backend")
-    return backend.completion(request)
+    """Route request to appropriate provider service."""
+    provider_type = get_provider_type()
+    provider = get_provider()
+    logger.debug(f"Routing request to {provider_type} provider")
+    return provider.completion(request)
 
 
 def count_llm_tokens(request: TokenCountRequest) -> TokenCountResponse:
-    """Route token counting to appropriate backend."""
-    backend = get_backend()
-    logger.debug(f"Routing token count request to {get_backend_type()} backend")
-    return backend.count_tokens(request)
+    """Route token counting to appropriate provider."""
+    provider_type = get_provider_type()
+    provider = get_provider()
+    logger.debug(f"Routing token count request to {provider_type} provider")
+    return provider.count_tokens(request)
 
 
-def get_backend_info() -> dict:
-    """Get current backend configuration info."""
-    backend = get_backend_type()
+def get_provider_info() -> dict:
+    """Get current provider configuration info."""
+    provider = get_provider_type()
 
-    if backend == "bedrock":
+    if provider == "bedrock":
         return {
-            "backend": "bedrock",
+            "provider": "bedrock",
             "model": get_model_id(),
             "region": os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
             "profile": os.environ.get("AWS_PROFILE", "saml")
         }
-    elif backend == "openai_compatible":
+    elif provider == "openai_compatible":
         return {
-            "backend": "openai_compatible",
+            "provider": "openai_compatible",
             "model": get_openai_compatible_model(),
             "base_url": get_openai_compatible_base_url(),
             "api_key_configured": bool(os.environ.get("OPENAICOMPATIBLE_API_KEY"))
         }
     else:
-        return {"backend": "unknown", "error": f"Unsupported backend: {backend}"}
+        return {"provider": "unknown", "error": f"Unsupported provider: {provider}"}
 
 
-def validate_backend_config() -> bool:
-    """Validate current backend configuration is complete."""
+def validate_provider_config() -> bool:
+    """Validate current provider configuration is complete."""
     try:
-        backend = get_backend_type()
+        provider = get_provider_type()
 
-        if backend == "openai_compatible":
+        if provider == "openai_compatible":
             api_key = os.environ.get("OPENAICOMPATIBLE_API_KEY")
             return bool(api_key)
 
-        if backend == "bedrock":
+        if provider == "bedrock":
             # Basic env vars are optional due to AWS credential chain
             return True
 
         return False
 
     except Exception as e:
-        logger.error(f"Backend config validation failed: {str(e)}")
+        logger.error(f"Provider config validation failed: {str(e)}")
         return False
 
 
@@ -135,8 +137,8 @@ logger, request_logger = setup_logging()
 
 # Create FastAPI application
 app = FastAPI(
-    title="Claude Multi-Backend Proxy Server",
-    description="Claude API compatible server supporting multiple LLM backends (Bedrock, OpenAI)",
+    title="Claude Multi-Provider Proxy Server",
+    description="Claude API compatible server supporting multiple LLM providers (Bedrock, OpenAI)",
     version="1.0.0"
 )
 
@@ -184,7 +186,7 @@ async def create_message(request: MessagesRequest):
         duration = time.time() - start_time
 
         # Log successful request/response
-        backend_info = get_backend_info()
+        provider_info = get_provider_info()
         log_request_response(
             request_logger=request_logger,
             main_logger=logger,
@@ -193,7 +195,7 @@ async def create_message(request: MessagesRequest):
             response_data=result.model_dump(),
             duration=duration,
             status_code=200,
-            backend_info=backend_info
+            provider_info=provider_info
         )
 
         return result
@@ -203,7 +205,7 @@ async def create_message(request: MessagesRequest):
         error_msg = str(e)
 
         # Log failed request
-        backend_info = get_backend_info()
+        provider_info = get_provider_info()
         log_request_response(
             request_logger=request_logger,
             main_logger=logger,
@@ -213,7 +215,7 @@ async def create_message(request: MessagesRequest):
             duration=duration,
             status_code=500,
             error=error_msg,
-            backend_info=backend_info
+            provider_info=provider_info
         )
 
         raise
@@ -229,7 +231,7 @@ async def count_tokens(request: TokenCountRequest):
         duration = time.time() - start_time
 
         # Log successful token count
-        backend_info = get_backend_info()
+        provider_info = get_provider_info()
         log_request_response(
             request_logger=request_logger,
             main_logger=logger,
@@ -238,7 +240,7 @@ async def count_tokens(request: TokenCountRequest):
             response_data={"input_tokens": result.input_tokens},
             duration=duration,
             status_code=200,
-            backend_info=backend_info
+            provider_info=provider_info
         )
 
         return result
@@ -248,7 +250,7 @@ async def count_tokens(request: TokenCountRequest):
         error_msg = str(e)
 
         # Log failed token count
-        backend_info = get_backend_info()
+        provider_info = get_provider_info()
         log_request_response(
             request_logger=request_logger,
             main_logger=logger,
@@ -258,7 +260,7 @@ async def count_tokens(request: TokenCountRequest):
             duration=duration,
             status_code=500,
             error=error_msg,
-            backend_info=backend_info
+            provider_info=provider_info
         )
 
         raise
@@ -267,20 +269,20 @@ async def count_tokens(request: TokenCountRequest):
 @app.get("/")
 async def root():
     """Root endpoint with server info."""
-    backend_info = get_backend_info()
+    provider_info = get_provider_info()
     return {
-        "message": "Claude Code-Compatible Multi-Backend Server",
-        "backend": backend_info["backend"],
-        "model": backend_info["model"]
+        "message": "Claude Code-Compatible Multi-Provider Server",
+        "provider": provider_info["provider"],
+        "model": provider_info["model"]
     }
 
 
 @app.get("/health")
 async def health():
     """Health check endpoint."""
-    backend_info = get_backend_info()
+    provider_info = get_provider_info()
     return {
         "status": "healthy",
-        "backend": backend_info["backend"],
-        "model": backend_info["model"]
+        "provider": provider_info["provider"],
+        "model": provider_info["model"]
     }

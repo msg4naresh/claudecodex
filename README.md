@@ -1,8 +1,8 @@
 # Claude Codex
 
-Monitor and intercept Claude Code API requests with multi-backend LLM support.
+Monitor and intercept Claude Code API requests with multi-provider LLM support.
 
-A hackable Claude API proxy for monitoring AI agent requests and connecting multiple LLM backends. No complex AI frameworks - just FastAPI, requests, and clean code you can easily modify.
+A hackable Claude API proxy for monitoring AI agent requests and connecting multiple LLM providers. No complex AI frameworks - just FastAPI, requests, and clean code you can easily modify.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ claudecodex
 
 **With AWS Bedrock:**
 ```bash
-export LLM_BACKEND=bedrock
+export LLM_PROVIDER=bedrock
 claudecodex
 ```
 
@@ -39,9 +39,9 @@ That's it! Claude Code will now send requests through your proxy.
 ## What You Can Do
 
 - **Monitor requests** - See all Claude Code API calls in real-time with color-coded logs
-- **Switch backends** - Run the same workflow on Claude, GPT-4, Gemini, or local models
+- **Switch providers** - Run the same workflow on Claude, GPT-4, Gemini, or local models
 - **Debug workflows** - Watch which tools get called and when
-- **Extend capabilities** - Simple translation layer makes adding new backends straightforward
+- **Extend capabilities** - Simple translation layer makes adding new providers straightforward
 
 ## Architecture
 
@@ -51,19 +51,19 @@ That's it! Claude Code will now send requests through your proxy.
 └─────────────┘            POST /v1/messages            │   (server.py)   │
                                                         └─────────────────┘
                                                                   │
-                                                      get_backend() │
+                                                      get_provider() │
                                                     (Protocol-based) │
                                                                   │
                            ┌──────────────────────────────────────┼──────────────────────────────────────┐
                            │                                      │                                      │
                            ▼                                      ▼                                      ▼
                  ┌─────────────────┐                   ┌─────────────────┐                   ┌─────────────────┐
-                 │BedrockBackend   │                   │OpenAICompatible │                   │  Your Custom    │
-                 │  (bedrock.py)   │                   │    Backend      │                   │    Backend      │
-                 │                 │                   │(openai_compat.py│                   │ (LLMBackend)    │
+                 │BedrockProvider  │                   │OpenAICompatible │                   │  Your Custom    │
+                 │  (bedrock.py)   │                   │    Provider     │                   │    Provider     │
+                 │                 │                   │(openai_compat.py│                   │ (LLMProvider)   │
                  │Implements:      │                   │                 │                   │                 │
-                 │ LLMBackend      │                   │Implements:      │                   │Implements:      │
-                 │  Protocol       │                   │ LLMBackend      │                   │ LLMBackend      │
+                 │ LLMProvider     │                   │Implements:      │                   │Implements:      │
+                 │  Protocol       │                   │ LLMProvider     │                   │ LLMProvider     │
                  │                 │                   │  Protocol       │                   │  Protocol       │
                  └─────────────────┘                   └─────────────────┘                   └─────────────────┘
                            │                                      │                                      │
@@ -80,12 +80,12 @@ That's it! Claude Code will now send requests through your proxy.
 
 **How it works:**
 1. Claude Code sends requests to Claude Codex (localhost:8082)
-2. `server.py` routes to backend instance via `get_backend()`
-3. Backend implements `LLMBackend` protocol with `completion()` and `count_tokens()` methods
-4. Each backend translates Claude API ↔ Provider API formats
+2. `server.py` routes to provider instance via `get_provider()`
+3. Provider implements `LLMProvider` protocol with `completion()` and `count_tokens()` methods
+4. Each provider translates Claude API ↔ Provider API formats
 5. Response flows back to Claude Code
 
-**Backend Support:**
+**Provider Support:**
 - **AWS Bedrock**: Claude Sonnet/Haiku/Opus (native format)
 - **OpenAI**: GPT-4, GPT-3.5 (via OpenAI API)
 - **Google Gemini**: 2.0-flash, 1.5-pro (via OpenAI-compatible API)
@@ -95,29 +95,29 @@ That's it! Claude Code will now send requests through your proxy.
 ## Project Goals
 
 ### Primary: Hackable LLM Request Monitoring
-- **See what Claude Code is actually doing** - intercept and log all requests/responses  
+- **See what Claude Code is actually doing** - intercept and log all requests/responses
 - **Monitor tool calling patterns** - watch which tools get called and when
 - **Debug agentic workflows** - understand multi-step task execution in real-time
 - **No AI frameworks required** - pure FastAPI + requests, easy to modify and extend
 
-### Secondary: LLM Backend Flexibility
+### Secondary: LLM Provider Flexibility
 - **Connect any LLM** - swap between Claude, GPT-4, Gemini, local models instantly
 - **Extend time limits** - run longer workflows by routing through your own infrastructure
-- **Add new backends** - protocol-based design makes adding new LLMs straightforward
+- **Add new providers** - protocol-based design makes adding new LLMs straightforward
 - **Custom model access** - use fine-tuned models or experimental endpoints
 
-### Adding a New Backend
+### Adding a New Provider
 
 The protocol-based architecture makes it easy to add new LLM providers:
 
-1. **Create a new backend file** (e.g., `src/claudecodex/custom_backend.py`)
-2. **Implement the `LLMBackend` protocol**:
+1. **Create a new provider file** (e.g., `src/claudecodex/custom_provider.py`)
+2. **Implement the `LLMProvider` protocol**:
    ```python
-   from claudecodex.backend import LLMBackend
+   from claudecodex.provider import LLMProvider
    from claudecodex.models import MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse
 
-   class CustomBackend:
-       """Your custom LLM backend."""
+   class CustomProvider:
+       """Your custom LLM provider."""
 
        def completion(self, request: MessagesRequest) -> MessagesResponse:
            # 1. Convert Claude format to your provider's format
@@ -132,21 +132,21 @@ The protocol-based architecture makes it easy to add new LLM providers:
 
 3. **Register in `server.py`**:
    ```python
-   from claudecodex.custom_backend import CustomBackend
+   from claudecodex.custom_provider import CustomProvider
 
-   def get_backend() -> LLMBackend:
-       backend_type = get_backend_type()
+   def get_provider() -> LLMProvider:
+       provider_type = get_provider_type()
 
-       if backend_type == "bedrock":
-           return BedrockBackend()
-       elif backend_type == "openai_compatible":
-           return OpenAICompatibleBackend()
-       elif backend_type == "custom":
-           return CustomBackend()
+       if provider_type == "bedrock":
+           return BedrockProvider()
+       elif provider_type == "openai_compatible":
+           return OpenAICompatibleProvider()
+       elif provider_type == "custom":
+           return CustomProvider()
        # ...
    ```
 
-Reference the existing `BedrockBackend` and `OpenAICompatibleBackend` implementations for translation patterns.
+Reference the existing `BedrockProvider` and `OpenAICompatibleProvider` implementations for translation patterns.
 
 ## Why Build This?
 
@@ -158,12 +158,12 @@ As developers working with AI agents, we often wonder:
 
 This proxy gives you **full visibility and control** without complex AI frameworks.
 
-## Backends
+## Providers
 
-- **AWS Bedrock**: Claude Sonnet/Haiku/Opus (`LLM_BACKEND=bedrock`)
-- **Google Gemini**: gemini-2.0-flash (`LLM_BACKEND=openai_compatible` + Gemini config)
-- **OpenAI**: GPT-4/3.5 (`LLM_BACKEND=openai_compatible` + OpenAI config)  
-- **Local**: Ollama, LM Studio (`LLM_BACKEND=openai_compatible` + local config)
+- **AWS Bedrock**: Claude Sonnet/Haiku/Opus (`LLM_PROVIDER=bedrock`)
+- **Google Gemini**: gemini-2.0-flash (`LLM_PROVIDER=openai_compatible` + Gemini config)
+- **OpenAI**: GPT-4/3.5 (`LLM_PROVIDER=openai_compatible` + OpenAI config)
+- **Local**: Ollama, LM Studio (`LLM_PROVIDER=openai_compatible` + local config)
 
 ---
 
@@ -217,16 +217,16 @@ pip install -e .  # Install in editable mode
 ### Environment Variables
 
 ```bash
-# Backend selection
-LLM_BACKEND=bedrock|openai_compatible  # default: openai_compatible
+# Provider selection
+LLM_PROVIDER=bedrock|openai_compatible  # default: openai_compatible
 SERVER_PORT=8082                       # default: 8082
 
-# Bedrock backend
+# Bedrock provider
 AWS_PROFILE=your-profile               # default: saml
 AWS_DEFAULT_REGION=us-east-1           # default: us-east-1
 BEDROCK_MODEL_ID=model-id              # default: us.anthropic.claude-sonnet-4-*
 
-# OpenAI-compatible backend
+# OpenAI-compatible provider
 OPENAICOMPATIBLE_API_KEY=your-key      # required for openai_compatible
 OPENAICOMPATIBLE_BASE_URL=endpoint-url # provider-specific
 OPENAI_MODEL=model-name                # default: gemini-2.0-flash
@@ -243,9 +243,9 @@ ANTHROPIC_BASE_URL=http://localhost:8082
 │   ├── __init__.py                   # Package info
 │   ├── main.py                       # Entry point
 │   ├── server.py                     # FastAPI server & routing
-│   ├── backend.py                    # LLMBackend protocol definition
-│   ├── bedrock.py                    # AWS Bedrock backend
-│   ├── openai_compatible.py          # OpenAI-compatible backend
+│   ├── provider.py                   # LLMProvider protocol definition
+│   ├── bedrock.py                    # AWS Bedrock provider
+│   ├── openai_compatible.py          # OpenAI-compatible provider
 │   ├── models.py                     # Pydantic models
 │   └── logging_config.py             # Monitoring & logging
 ├── tests/                            # Test package
@@ -260,31 +260,31 @@ ANTHROPIC_BASE_URL=http://localhost:8082
 └── README.md                         # This file
 ```
 
-**Protocol-Based Architecture**: Extensible design makes adding new backends easy
-- `backend.py` - `LLMBackend` protocol interface
-- `server.py` - FastAPI server with backend routing and API endpoints
-- `bedrock.py` - AWS Bedrock backend implementing `LLMBackend`
-- `openai_compatible.py` - OpenAI-compatible backend implementing `LLMBackend`
+**Protocol-Based Architecture**: Extensible design makes adding new providers easy
+- `provider.py` - `LLMProvider` protocol interface
+- `server.py` - FastAPI server with provider routing and API endpoints
+- `bedrock.py` - AWS Bedrock provider implementing `LLMProvider`
+- `openai_compatible.py` - OpenAI-compatible provider implementing `LLMProvider`
 
 ## API Functions
 
-### Backend Protocol (`backend.py`)
-- `LLMBackend` - Protocol defining backend interface:
+### Provider Protocol (`provider.py`)
+- `LLMProvider` - Protocol defining provider interface:
   - `completion(request)` - Get completion from LLM
   - `count_tokens(request)` - Count tokens for a request
 
 ### Server Functions (`server.py`)
-- `get_backend_type()` - Determine backend from environment
-- `get_backend()` - Get backend instance (returns `LLMBackend`)
-- `call_llm_service(request)` - Route requests to backends
+- `get_provider_type()` - Determine provider from environment
+- `get_provider()` - Get provider instance (returns `LLMProvider`)
+- `call_llm_service(request)` - Route requests to providers
 - `count_llm_tokens(request)` - Token counting
-- `get_backend_info()` - Runtime configuration info
+- `get_provider_info()` - Runtime configuration info
 - `create_message(request)` - `/v1/messages` endpoint
 - `count_tokens(request)` - `/v1/messages/count_tokens` endpoint
 - `health()` - `/health` endpoint
 
-### Bedrock Backend (`bedrock.py`)
-- `BedrockBackend` - Backend class implementing `LLMBackend`
+### Bedrock Provider (`bedrock.py`)
+- `BedrockProvider` - Provider class implementing `LLMProvider`
   - `completion(request)` - Get completion from AWS Bedrock
   - `count_tokens(request)` - Count tokens for Bedrock
 - `call_bedrock_converse(request)` - AWS Bedrock API calls
@@ -293,8 +293,8 @@ ANTHROPIC_BASE_URL=http://localhost:8082
 - `convert_to_bedrock_messages()` - Claude → Bedrock format
 - `create_claude_response()` - Bedrock → Claude format
 
-### OpenAI-Compatible Backend (`openai_compatible.py`)
-- `OpenAICompatibleBackend` - Backend class implementing `LLMBackend`
+### OpenAI-Compatible Provider (`openai_compatible.py`)
+- `OpenAICompatibleProvider` - Provider class implementing `LLMProvider`
   - `completion(request)` - Get completion from OpenAI-compatible provider
   - `count_tokens(request)` - Count tokens for OpenAI
 - `call_openai_compatible_chat(request)` - OpenAI API calls
