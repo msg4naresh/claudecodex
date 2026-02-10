@@ -34,7 +34,7 @@ LLM_PROVIDER=openai_compatible pytest tests/integration/test_gemini_integration.
 
 ## Architecture Overview
 
-**ClaudeCodeRelayX** is a hackable Claude API proxy that intercepts Claude Code requests and routes them to configurable LLM providers (AWS Bedrock, OpenAI, Google Gemini, local models). The design prioritizes simplicity and transparency—pure HTTP clients with no AI framework dependencies.
+**claudecodex** is a hackable Claude API proxy that intercepts Claude Code requests and routes them to configurable LLM providers (AWS Bedrock, OpenAI, Google Gemini, local models). The design prioritizes simplicity and transparency—pure HTTP clients with no AI framework dependencies.
 
 ### Request Flow
 

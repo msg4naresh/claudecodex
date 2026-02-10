@@ -28,10 +28,10 @@ keywords = ["claude", "api", "proxy", "llm", "ai", "bedrock", "openai", "anthrop
 dynamic = ["dependencies"]
 
 [project.urls]
-Homepage = "https://github.com/msg4naresh/ClaudeCodeRelayX"
-Repository = "https://github.com/msg4naresh/ClaudeCodeRelayX"
-Issues = "https://github.com/msg4naresh/ClaudeCodeRelayX/issues"
-Documentation = "https://github.com/msg4naresh/ClaudeCodeRelayX#readme"
+Homepage = "https://github.com/msg4naresh/claudecodex"
+Repository = "https://github.com/msg4naresh/claudecodex"
+Issues = "https://github.com/msg4naresh/claudecodex/issues"
+Documentation = "https://github.com/msg4naresh/claudecodex#readme"
 
 [project.scripts]
 claudecodex = "claudecodex.main:main"
