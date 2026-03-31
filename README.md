@@ -26,6 +26,14 @@ export LLM_PROVIDER=bedrock
 claudecodex
 ```
 
+**With GitHub Copilot (GPT-4o / Claude via your Copilot subscription):**
+```bash
+export LLM_PROVIDER=copilot
+export COPILOT_MODEL=gpt-4o          # or claude-3.5-sonnet
+claudecodex
+```
+On first run, a GitHub device flow will prompt you to authorize in your browser. The token is saved to `~/.copilot_token` for future use.
+
 ### 3. Connect Claude Code
 
 ```bash
@@ -218,7 +226,7 @@ pip install -e .  # Install in editable mode
 
 ```bash
 # Provider selection
-LLM_PROVIDER=bedrock|openai_compatible  # default: openai_compatible
+LLM_PROVIDER=bedrock|openai_compatible|copilot  # default: openai_compatible
 SERVER_PORT=8082                       # default: 8082
 
 # Bedrock provider
@@ -230,6 +238,11 @@ BEDROCK_MODEL_ID=model-id              # default: us.anthropic.claude-sonnet-4-*
 OPENAICOMPATIBLE_API_KEY=your-key      # required for openai_compatible
 OPENAICOMPATIBLE_BASE_URL=endpoint-url # provider-specific
 OPENAI_MODEL=model-name                # default: gemini-2.0-flash
+
+# GitHub Copilot provider
+COPILOT_MODEL=gpt-4o                   # default: gpt-4o (also: claude-3.5-sonnet)
+COPILOT_OAUTH_TOKEN=your-token         # optional: skip device flow
+COPILOT_TOKEN_FILE=~/.copilot_token    # default: ~/.copilot_token
 
 # Claude Code integration
 ANTHROPIC_BASE_URL=http://localhost:8082
@@ -246,6 +259,7 @@ ANTHROPIC_BASE_URL=http://localhost:8082
 │   ├── provider.py                   # LLMProvider protocol definition
 │   ├── bedrock.py                    # AWS Bedrock provider
 │   ├── openai_compatible.py          # OpenAI-compatible provider
+│   ├── copilot.py                    # GitHub Copilot provider
 │   ├── models.py                     # Pydantic models
 │   └── logging_config.py             # Monitoring & logging
 ├── tests/                            # Test package
