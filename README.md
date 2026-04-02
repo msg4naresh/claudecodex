@@ -14,9 +14,17 @@ pip install .
 
 ### 2. Run
 
-**With Gemini (default):**
+**With GitHub Copilot (default):**
+```bash
+export LLM_PROVIDER=copilot   # optional; copilot is default when unset
+export COPILOT_MODEL=gpt-4o   # or claude-3.5-sonnet
+claudecodex
+```
+
+**With Gemini:**
 ```bash
 export OPENAICOMPATIBLE_API_KEY=your-gemini-key
+export LLM_PROVIDER=openai_compatible
 claudecodex
 ```
 
@@ -26,13 +34,7 @@ export LLM_PROVIDER=bedrock
 claudecodex
 ```
 
-**With GitHub Copilot (GPT-4o / Claude via your Copilot subscription):**
-```bash
-export LLM_PROVIDER=copilot
-export COPILOT_MODEL=gpt-4o          # or claude-3.5-sonnet
-claudecodex
-```
-On first run, a GitHub device flow will prompt you to authorize in your browser. The token is saved to `~/.copilot_token` for future use.
+On first Copilot run, a GitHub device flow will prompt you to authorize in your browser. The token is saved to `~/.copilot_token` for future use.
 
 ### 3. Connect Claude Code
 
@@ -226,7 +228,7 @@ pip install -e .  # Install in editable mode
 
 ```bash
 # Provider selection
-LLM_PROVIDER=bedrock|openai_compatible|copilot  # default: openai_compatible
+LLM_PROVIDER=bedrock|openai_compatible|copilot  # default: copilot
 SERVER_PORT=8082                       # default: 8082
 
 # Bedrock provider
@@ -316,4 +318,3 @@ ANTHROPIC_BASE_URL=http://localhost:8082
 - `get_openai_compatible_client()` - HTTP session setup
 - `convert_to_openai_messages()` - Claude → OpenAI format
 - `create_claude_response_from_openai()` - OpenAI → Claude format
-

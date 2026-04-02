@@ -47,17 +47,27 @@ logger = logging.getLogger(__name__)
 # === OPENAI COMPATIBLE CLIENT ===
 
 
-def get_openai_compatible_client():
-    """Get configured HTTP session for OpenAI-compatible providers."""
+def get_openai_compatible_client(
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    extra_headers: Optional[Dict[str, str]] = None,
+):
+    """Get configured HTTP session for OpenAI-compatible providers.
+
+    Args:
+        api_key: Optional API key override. Falls back to OPENAICOMPATIBLE_API_KEY.
+        base_url: Optional base URL override. Defaults to the Gemini-compatible endpoint.
+        extra_headers: Optional additional headers to merge (later keys override earlier ones).
+    """
     try:
-        api_key = os.environ.get("OPENAICOMPATIBLE_API_KEY")
-        if not api_key:
+        api_key = api_key or os.environ.get("OPENAICOMPATIBLE_API_KEY")
+        if not api_key and not (extra_headers and "Authorization" in extra_headers):
             raise HTTPException(
                 status_code=500,
-                detail="OPENAICOMPATIBLE_API_KEY environment variable is required",
+                detail="API key required: set OPENAICOMPATIBLE_API_KEY or supply an Authorization header",
             )
 
-        base_url = os.environ.get(
+        base_url = base_url or os.environ.get(
             "OPENAICOMPATIBLE_BASE_URL",
             "https://generativelanguage.googleapis.com/v1beta/openai",
         )
@@ -77,13 +87,21 @@ def get_openai_compatible_client():
         session.mount("https://", adapter)
 
         # Set default headers
-        session.headers.update(
-            {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "User-Agent": "claude-bedrock-proxy/1.0.0",
-            }
-        )
+        default_headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "claude-bedrock-proxy/1.0.0",
+        }
+
+        # Base headers first
+        session.headers.update(default_headers)
+
+        # Authorization handling
+        if extra_headers and "Authorization" in extra_headers:
+            session.headers.update(extra_headers)
+        else:
+            session.headers.update({"Authorization": f"Bearer {api_key}"})
+            if extra_headers:
+                session.headers.update(extra_headers)
 
         # Store base URL for later use
         session.base_url = base_url
@@ -351,12 +369,16 @@ def create_claude_response_from_openai(
 # === OPENAI COMPATIBLE SERVICE ===
 
 
-def call_openai_compatible_chat(request: MessagesRequest) -> MessagesResponse:
+def call_openai_compatible_chat(
+    request: MessagesRequest,
+    client: Optional[requests.Session] = None,
+    model_id: Optional[str] = None,
+) -> MessagesResponse:
     """Execute Claude API request via OpenAI-compatible provider."""
     try:
         # Get OpenAI client and model
-        openai_client = get_openai_compatible_client()
-        model_id = get_openai_compatible_model()
+        openai_client = client or get_openai_compatible_client()
+        model_id = model_id or get_openai_compatible_model()
 
         # Convert messages to OpenAI format
         openai_messages = convert_to_openai_messages(request)

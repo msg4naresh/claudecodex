@@ -15,6 +15,7 @@ import os
 import json
 import time
 import logging
+from pathlib import Path
 from typing import Literal
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,13 +33,15 @@ from claudecodex.openai_compatible import (
     get_openai_compatible_model,
     get_openai_compatible_base_url
 )
+from claudecodex.copilot_provider import CopilotProvider, get_copilot_model
+from claudecodex.copilot import COPILOT_BASE_URL, COPILOT_TOKEN_ENDPOINT
 from claudecodex.logging_config import setup_logging, log_request_response
 
 
 # === PROVIDER ROUTING ===
 
 logger = logging.getLogger(__name__)
-ProviderType = Literal["bedrock", "openai_compatible"]
+ProviderType = Literal["bedrock", "openai_compatible", "copilot"]
 
 
 def get_provider_type() -> ProviderType:
@@ -47,17 +50,14 @@ def get_provider_type() -> ProviderType:
     explicit_provider = os.environ.get("LLM_PROVIDER")
     if explicit_provider:
         provider = explicit_provider.lower()
-        if provider not in ["bedrock", "openai_compatible"]:
+        if provider not in ["bedrock", "openai_compatible", "copilot"]:
             raise ValueError(
-                f"Unsupported LLM provider: {provider}. Must be 'bedrock' or 'openai_compatible'"
+                f"Unsupported LLM provider: {provider}. Must be 'bedrock', 'openai_compatible', or 'copilot'"
             )
         return provider
 
-    # Auto-detect provider based on available API keys (default to openai_compatible)
-    if os.environ.get("OPENAICOMPATIBLE_API_KEY"):
-        return "openai_compatible"
-    else:
-        return "bedrock"
+    # Default to Copilot when not explicitly set
+    return "copilot"
 
 
 def get_provider() -> LLMProvider:
@@ -68,6 +68,8 @@ def get_provider() -> LLMProvider:
         return BedrockProvider()
     elif provider_type == "openai_compatible":
         return OpenAICompatibleProvider()
+    elif provider_type == "copilot":
+        return CopilotProvider()
     else:
         raise ValueError(f"Unsupported provider: {provider_type}")
 
@@ -106,6 +108,19 @@ def get_provider_info() -> dict:
             "base_url": get_openai_compatible_base_url(),
             "api_key_configured": bool(os.environ.get("OPENAICOMPATIBLE_API_KEY"))
         }
+    elif provider == "copilot":
+        token_file = os.environ.get("COPILOT_TOKEN_FILE")
+        if token_file:
+            token_path = Path(token_file).expanduser()
+        else:
+            token_path = Path.home() / ".copilot_token"
+        return {
+            "provider": "copilot",
+            "model": get_copilot_model(),
+            "base_url": COPILOT_BASE_URL,
+            "token_cached": token_path.exists(),
+            "token_endpoint": COPILOT_TOKEN_ENDPOINT,
+        }
     else:
         return {"provider": "unknown", "error": f"Unsupported provider: {provider}"}
 
@@ -118,6 +133,10 @@ def validate_provider_config() -> bool:
         if provider == "openai_compatible":
             api_key = os.environ.get("OPENAICOMPATIBLE_API_KEY")
             return bool(api_key)
+
+        if provider == "copilot":
+            # Copilot can always fall back to device flow; treat as valid.
+            return True
 
         if provider == "bedrock":
             # Basic env vars are optional due to AWS credential chain

@@ -64,19 +64,30 @@ class CopilotAuth:
     ):
         self._oauth_token = oauth_token.strip() if oauth_token else None
         self._token_file = (
-            Path(token_file) if token_file else Path.home() / ".copilot_token"
+            Path(token_file).expanduser() if token_file else Path.home() / ".copilot_token"
         )
         self._session_token: Optional[str] = None
         self._session_token_expiry: float = 0
         self._lock = threading.Lock()
+        self._refresh_lock = threading.Lock()
 
     def get_session_token(self) -> str:
         """Get a valid Copilot session token, refreshing if needed."""
+        # Fast path: return cached token if still valid
         with self._lock:
             if self._session_token and time.time() < (
                 self._session_token_expiry - self._SESSION_TOKEN_REFRESH_BUFFER_SECONDS
             ):
                 return self._session_token
+
+        # Slow path: refresh token; only one thread should perform the refresh
+        with self._refresh_lock:
+            # Another thread may have refreshed while we waited
+            with self._lock:
+                if self._session_token and time.time() < (
+                    self._session_token_expiry - self._SESSION_TOKEN_REFRESH_BUFFER_SECONDS
+                ):
+                    return self._session_token
 
             oauth_token = self._resolve_oauth_token()
 
@@ -111,15 +122,23 @@ class CopilotAuth:
                 ) from e
 
             data = resp.json()
+            token = data.get("token")
+            if not token:
+                raise CopilotAuthError(
+                    f"Invalid session token response: {data}"
+                )
 
-            self._session_token = data["token"]
-            self._session_token_expiry = self._parse_expiry(self._session_token)
+            session_expiry = self._parse_expiry(token)
+
+            with self._lock:
+                self._session_token = token
+                self._session_token_expiry = session_expiry
 
             logger.info(
                 "Copilot session token obtained (expires in %ds)",
-                int(self._session_token_expiry - time.time()),
+                int(session_expiry - time.time()),
             )
-            return self._session_token
+            return token
 
     def invalidate_session(self):
         """Force session token refresh on next call."""
@@ -132,26 +151,41 @@ class CopilotAuth:
 
         CALLER MUST HOLD self._lock.
         """
-        if not self._lock.locked():
-            raise RuntimeError("_reset_auth_state called without lock")
-
-        self._session_token = None
-        self._session_token_expiry = 0
-        self._oauth_token = None
-        if self._token_file.exists():
-            self._token_file.unlink()
-            logger.info("Removed cached token file: %s", self._token_file)
+        with self._lock:
+            self._session_token = None
+            self._session_token_expiry = 0
+            self._oauth_token = None
+            try:
+                self._token_file.unlink()
+                logger.info("Removed cached token file: %s", self._token_file)
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                logger.warning("Failed to remove cached token file %s: %s", self._token_file, e)
 
     def _resolve_oauth_token(self) -> str:
         """Get OAuth token from explicit value, file, or device flow."""
         if self._oauth_token is not None:
             return self._oauth_token
 
-        if self._token_file.exists():
+        try:
             token = self._token_file.read_text().strip()
             if token:
                 self._oauth_token = token
                 return token
+            else:
+                # Empty file: clean up to avoid repeated empty reads
+                try:
+                    self._token_file.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError as e:
+                    logger.warning("Failed to remove empty token file %s: %s", self._token_file, e)
+        except FileNotFoundError:
+            token = None
+        except Exception as e:
+            logger.warning("Failed to read token file %s: %s", self._token_file, e)
+            token = None
 
         logger.info("No Copilot OAuth token found. Starting device flow...")
         token = self._run_device_flow()
