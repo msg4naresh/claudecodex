@@ -49,6 +49,7 @@ On first Copilot run, a GitHub device flow will prompt you to authorize in your 
 
 ```bash
 export ANTHROPIC_BASE_URL=http://localhost:8082
+export ANTHROPIC_AUTH_TOKEN=dummy   # any non-empty string; skips the login prompt
 ```
 
 That's it! Claude Code will now send requests through your proxy.
@@ -150,19 +151,14 @@ The protocol-based architecture makes it easy to add new LLM providers:
            pass
    ```
 
-3. **Register in `server.py`**:
+3. **Register in `server.py`** (providers are cached per type):
    ```python
    from claudecodex.custom_provider import CustomProvider
 
-   def get_provider() -> LLMProvider:
-       provider_type = get_provider_type()
-
-       if provider_type == "bedrock":
-           return BedrockProvider()
-       elif provider_type == "openai_compatible":
-           return OpenAICompatibleProvider()
-       elif provider_type == "custom":
-           return CustomProvider()
+   # inside get_provider():
+   if provider_type not in _provider_instances:
+       if provider_type == "custom":
+           _provider_instances[provider_type] = CustomProvider()
        # ...
    ```
 
@@ -180,6 +176,7 @@ This proxy gives you **full visibility and control** without complex AI framewor
 
 ## Providers
 
+- **GitHub Copilot** (default): Claude Sonnet/Haiku/Opus, GPT models via your Copilot subscription (`LLM_PROVIDER=copilot`)
 - **AWS Bedrock**: Claude Sonnet/Haiku/Opus (`LLM_PROVIDER=bedrock`)
 - **Google Gemini**: gemini-2.0-flash (`LLM_PROVIDER=openai_compatible` + Gemini config)
 - **OpenAI**: GPT-4/3.5 (`LLM_PROVIDER=openai_compatible` + OpenAI config)
@@ -222,6 +219,7 @@ This project uses `uv` for package management and `ruff` for linting and formatt
 pytest tests/ -v              # All tests
 pytest tests/unit/ -v         # Unit tests only (fast)
 pytest tests/integration/ -v  # Integration tests (requires API keys)
+RUN_E2E=1 pytest tests/e2e/ -v  # Provider/model matrix (real API calls; skips without creds)
 ```
 
 ### Install for Development
@@ -245,7 +243,7 @@ SERVER_HOST=127.0.0.1                  # default: 127.0.0.1 (localhost only; 0.0
 # Bedrock provider
 AWS_PROFILE=your-profile               # default: saml
 AWS_DEFAULT_REGION=us-east-1           # default: us-east-1
-BEDROCK_MODEL_ID=model-id              # default: us.anthropic.claude-sonnet-4-*
+BEDROCK_MODEL_ID=model-id              # default: us.anthropic.claude-haiku-4-5-20251001-v1:0
 
 # OpenAI-compatible provider
 OPENAICOMPATIBLE_API_KEY=your-key      # required for openai_compatible
@@ -268,20 +266,24 @@ ANTHROPIC_BASE_URL=http://localhost:8082
 ├── src/claudecodex/                  # Core package
 │   ├── __init__.py                   # Package info
 │   ├── main.py                       # Entry point
-│   ├── server.py                     # FastAPI server & routing
+│   ├── server.py                     # FastAPI server, routing & streaming
 │   ├── provider.py                   # LLMProvider protocol definition
 │   ├── bedrock.py                    # AWS Bedrock provider
-│   ├── openai_compatible.py          # OpenAI-compatible provider
-│   ├── copilot.py                    # GitHub Copilot provider
+│   ├── openai_compatible.py          # OpenAI-compatible provider + SSE translation
+│   ├── copilot.py                    # GitHub Copilot auth (OAuth device flow)
+│   ├── copilot_provider.py           # GitHub Copilot provider (streaming)
+│   ├── dashboard.py                  # Live monitoring dashboard (/dashboard)
 │   ├── models.py                     # Pydantic models
 │   └── logging_config.py             # Monitoring & logging
 ├── tests/                            # Test package
 │   ├── unit/                         # Fast tests with mocks
 │   │   ├── test_api_endpoints.py     # API endpoint tests
-│   │   └── test_openai_compatible.py # OpenAI service tests
-│   └── integration/                  # Full system tests
-│       ├── test_bedrock_integration.py # Bedrock end-to-end tests
-│       └── test_gemini_integration.py  # Gemini end-to-end tests
+│   │   └── test_openai_compatible.py # Translation & streaming tests
+│   ├── integration/                  # Full system tests
+│   │   ├── test_bedrock_integration.py # Bedrock end-to-end tests
+│   │   └── test_gemini_integration.py  # Gemini end-to-end tests
+│   └── e2e/                          # Provider/model matrix (RUN_E2E=1)
+│       └── test_provider_matrix.py   # Completion/tools/streaming/tokens per provider
 ├── logs/                             # Generated log files
 ├── requirements.txt                  # Dependencies
 └── README.md                         # This file
@@ -306,8 +308,9 @@ ANTHROPIC_BASE_URL=http://localhost:8082
 - `call_llm_service(request)` - Route requests to providers
 - `count_llm_tokens(request)` - Token counting
 - `get_provider_info()` - Runtime configuration info
-- `create_message(request)` - `/v1/messages` endpoint
+- `create_message(request)` - `/v1/messages` endpoint (JSON or SSE streaming)
 - `count_tokens(request)` - `/v1/messages/count_tokens` endpoint
+- `dashboard()` / `dashboard_data()` - `/dashboard` live monitor + JSON feed
 - `health()` - `/health` endpoint
 
 ### Bedrock Provider (`bedrock.py`)
@@ -329,3 +332,10 @@ ANTHROPIC_BASE_URL=http://localhost:8082
 - `get_openai_compatible_client()` - HTTP session setup
 - `convert_to_openai_messages()` - Claude → OpenAI format
 - `create_claude_response_from_openai()` - OpenAI → Claude format
+- `stream_openai_as_anthropic()` - OpenAI SSE chunks → Anthropic SSE events (incremental)
+- `aggregate_openai_stream()` - Assemble a full response from an SSE stream
+
+### GitHub Copilot Provider (`copilot_provider.py` + `copilot.py`)
+- `CopilotProvider` - Provider class implementing `LLMProvider`
+  - `completion(request)` / `completion_stream(request)` - via Copilot's OpenAI-compatible API
+- `CopilotAuth` (`copilot.py`) - OAuth device flow + session token lifecycle
