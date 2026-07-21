@@ -27,6 +27,9 @@ classifiers = [
 keywords = ["claude", "api", "proxy", "llm", "ai", "bedrock", "openai", "anthropic", "fastapi"]
 dynamic = ["dependencies"]
 
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
 [project.urls]
 Homepage = "https://github.com/msg4naresh/claudecodex"
 Repository = "https://github.com/msg4naresh/claudecodex"

@@ -15,8 +15,6 @@ import os
 import json
 import time
 import logging
-from pathlib import Path
-from typing import Literal
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -27,38 +25,32 @@ from claudecodex.models import (
     TokenCountRequest,
     TokenCountResponse
 )
-from claudecodex.provider import LLMProvider
-from claudecodex.bedrock import BedrockProvider, get_model_id
-from claudecodex.openai_compatible import (
-    OpenAICompatibleProvider,
-    get_openai_compatible_model,
-    get_openai_compatible_base_url
-)
-from claudecodex.copilot_provider import CopilotProvider, get_copilot_model
-from claudecodex.copilot import COPILOT_BASE_URL, COPILOT_TOKEN_ENDPOINT
+from claudecodex.provider import LLMProvider, anthropic_sse as sse_event
+from claudecodex import registry
 from claudecodex.logging_config import setup_logging, log_request_response
 
 
 # === PROVIDER ROUTING ===
+#
+# server.py knows nothing about individual providers - it only talks to
+# the registry. To add a provider, see registry.py; this file never
+# changes.
 
 logger = logging.getLogger(__name__)
-ProviderType = Literal["bedrock", "openai_compatible", "copilot"]
 
 
-def get_provider_type() -> ProviderType:
+def get_provider_type() -> str:
     """Get configured provider type from environment variables."""
-    # Check for explicit provider selection first
     explicit_provider = os.environ.get("LLM_PROVIDER")
     if explicit_provider:
         provider = explicit_provider.lower()
-        if provider not in ["bedrock", "openai_compatible", "copilot"]:
+        if provider not in registry.provider_names():
             raise ValueError(
-                f"Unsupported LLM provider: {provider}. Must be 'bedrock', 'openai_compatible', or 'copilot'"
+                f"Unsupported LLM provider: {provider}. Must be one of: "
+                f"{', '.join(registry.provider_names())}"
             )
         return provider
-
-    # Default to Copilot when not explicitly set
-    return "copilot"
+    return registry.DEFAULT_PROVIDER
 
 
 _provider_instances: dict = {}
@@ -69,14 +61,7 @@ def get_provider() -> LLMProvider:
     provider_type = get_provider_type()
 
     if provider_type not in _provider_instances:
-        if provider_type == "bedrock":
-            _provider_instances[provider_type] = BedrockProvider()
-        elif provider_type == "openai_compatible":
-            _provider_instances[provider_type] = OpenAICompatibleProvider()
-        elif provider_type == "copilot":
-            _provider_instances[provider_type] = CopilotProvider()
-        else:
-            raise ValueError(f"Unsupported provider: {provider_type}")
+        _provider_instances[provider_type] = registry.get_entry(provider_type).factory()
 
     return _provider_instances[provider_type]
 
@@ -99,58 +84,13 @@ def count_llm_tokens(request: TokenCountRequest) -> TokenCountResponse:
 
 def get_provider_info() -> dict:
     """Get current provider configuration info."""
-    provider = get_provider_type()
-
-    if provider == "bedrock":
-        return {
-            "provider": "bedrock",
-            "model": get_model_id(),
-            "region": os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
-            "profile": os.environ.get("AWS_PROFILE", "saml")
-        }
-    elif provider == "openai_compatible":
-        return {
-            "provider": "openai_compatible",
-            "model": get_openai_compatible_model(),
-            "base_url": get_openai_compatible_base_url(),
-            "api_key_configured": bool(os.environ.get("OPENAICOMPATIBLE_API_KEY"))
-        }
-    elif provider == "copilot":
-        token_file = os.environ.get("COPILOT_TOKEN_FILE")
-        if token_file:
-            token_path = Path(token_file).expanduser()
-        else:
-            token_path = Path.home() / ".copilot_token"
-        return {
-            "provider": "copilot",
-            "model": get_copilot_model(),
-            "base_url": COPILOT_BASE_URL,
-            "token_cached": token_path.exists(),
-            "token_endpoint": COPILOT_TOKEN_ENDPOINT,
-        }
-    else:
-        return {"provider": "unknown", "error": f"Unsupported provider: {provider}"}
+    return registry.get_entry(get_provider_type()).describe()
 
 
 def validate_provider_config() -> bool:
     """Validate current provider configuration is complete."""
     try:
-        provider = get_provider_type()
-
-        if provider == "openai_compatible":
-            api_key = os.environ.get("OPENAICOMPATIBLE_API_KEY")
-            return bool(api_key)
-
-        if provider == "copilot":
-            # Copilot can always fall back to device flow; treat as valid.
-            return True
-
-        if provider == "bedrock":
-            # Basic env vars are optional due to AWS credential chain
-            return True
-
-        return False
-
+        return registry.get_entry(get_provider_type()).validate()
     except Exception as e:
         logger.error(f"Provider config validation failed: {str(e)}")
         return False
@@ -212,11 +152,8 @@ async def anthropic_error_handler(request: Request, exc: HTTPException):
 
 
 # === STREAMING ===
-
-
-def sse_event(event: str, data: dict) -> str:
-    """Format a single server-sent event."""
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+# sse_event is claudecodex.provider.anthropic_sse under a local alias, kept
+# for call-site brevity in this file.
 
 
 def stream_response_events(result: MessagesResponse):
@@ -326,6 +263,7 @@ def create_message(request: MessagesRequest):
                 # Accumulate a response summary from our own events for logging
                 text_parts, tool_names = [], []
                 usage_out, stop_reason = 0, None
+                stream_model = None
                 stream_error = None
                 try:
                     try:
@@ -336,7 +274,9 @@ def create_message(request: MessagesRequest):
                             except (IndexError, json.JSONDecodeError):
                                 continue
                             ptype = payload.get("type")
-                            if (ptype == "content_block_delta"
+                            if ptype == "message_start":
+                                stream_model = payload.get("message", {}).get("model")
+                            elif (ptype == "content_block_delta"
                                     and payload["delta"].get("type") == "text_delta"):
                                 text_parts.append(payload["delta"]["text"])
                             elif (ptype == "content_block_start"
@@ -365,6 +305,9 @@ def create_message(request: MessagesRequest):
                     content.extend(
                         {"type": "tool_use", "name": name} for name in tool_names
                     )
+                    provider_info = get_provider_info()
+                    if stream_model:
+                        provider_info["model"] = stream_model
                     log_request_response(
                         request_logger=request_logger,
                         main_logger=logger,
@@ -379,7 +322,7 @@ def create_message(request: MessagesRequest):
                         duration=time.time() - start_time,
                         status_code=500 if stream_error else 200,
                         error=stream_error,
-                        provider_info=get_provider_info()
+                        provider_info=provider_info
                     )
 
             return StreamingResponse(
@@ -391,6 +334,7 @@ def create_message(request: MessagesRequest):
 
         # Log successful request/response
         provider_info = get_provider_info()
+        provider_info["model"] = result.model
         log_request_response(
             request_logger=request_logger,
             main_logger=logger,

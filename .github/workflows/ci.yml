@@ -18,9 +18,7 @@ jobs:
           cache: pip
 
       - name: Install
-        run: |
-          pip install -e .
-          pip install ruff pytest
+        run: pip install -e ".[dev]"
 
       - name: Lint
         run: ruff check src

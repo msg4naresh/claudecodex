@@ -166,6 +166,9 @@ def _write_full_payload(
     if not _LOG_FULL_PAYLOADS:
         return None
     try:
+        # Re-create the directory if it was removed after startup (e.g. a
+        # manual `rm -rf logs`) instead of silently dropping every write.
+        os.makedirs(_FULL_DIR, exist_ok=True)
         path = os.path.abspath(os.path.join(_FULL_DIR, f"{file_id}.json"))
         with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=True, indent=2)

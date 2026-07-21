@@ -26,7 +26,8 @@ pip install .
 **With GitHub Copilot (default):**
 ```bash
 export LLM_PROVIDER=copilot   # optional; copilot is default when unset
-export COPILOT_MODEL=claude-sonnet-4.6   # or gpt-4o, claude-haiku-4.5
+# Optional model pin (disables /model switching):
+# export COPILOT_MODEL=claude-sonnet-4.6
 claudecodex
 ```
 
@@ -142,12 +143,12 @@ Then restart `claudecodex` normally.
 
 ### Adding a New Provider
 
-The protocol-based architecture makes it easy to add new LLM providers:
+Providers register themselves in `registry.py` - **`server.py` never needs to change** to add one.
 
 1. **Create a new provider file** (e.g., `src/claudecodex/custom_provider.py`)
-2. **Implement the `LLMProvider` protocol**:
+2. **Implement the `LLMProvider` protocol, plus a `PROVIDER` entry**:
    ```python
-   from claudecodex.provider import LLMProvider
+   from claudecodex.provider import LLMProvider, ProviderEntry
    from claudecodex.models import MessagesRequest, MessagesResponse, TokenCountRequest, TokenCountResponse
 
    class CustomProvider:
@@ -162,20 +163,35 @@ The protocol-based architecture makes it easy to add new LLM providers:
        def count_tokens(self, request: TokenCountRequest) -> TokenCountResponse:
            # Count tokens for your provider
            pass
+
+       # Optional: def completion_stream(self, request) -> incremental SSE events
+       # (see bedrock.py or copilot_provider.py). Providers without it fall
+       # back to replay streaming automatically.
+
+   def describe_custom() -> dict:
+       """Runtime info shown at /, /health, /dashboard."""
+       return {"provider": "custom", "model": "your-model-id"}
+
+   def validate_custom_config() -> bool:
+       """Checked at startup; False makes claudecodex exit with a clear error."""
+       return True
+
+   PROVIDER = ProviderEntry(
+       name="custom",
+       factory=CustomProvider,
+       describe=describe_custom,
+       validate=validate_custom_config,
+   )
    ```
 
-3. **Register in `server.py`** (providers are cached per type):
+3. **Add one import + one entry in `registry.py`** - the only file that changes:
    ```python
-   from claudecodex.custom_provider import CustomProvider
+   from claudecodex.custom_provider import PROVIDER as _custom
 
-   # inside get_provider():
-   if provider_type not in _provider_instances:
-       if provider_type == "custom":
-           _provider_instances[provider_type] = CustomProvider()
-       # ...
+   _PROVIDERS = {p.name: p for p in (_bedrock, _openai_compatible, _copilot, _custom)}
    ```
 
-Reference the existing `BedrockProvider` and `OpenAICompatibleProvider` implementations for translation patterns.
+Reference the existing `bedrock.py` and `openai_compatible.py` for translation patterns.
 
 ## Why Build This?
 
@@ -211,7 +227,7 @@ This project uses `uv` for package management and `ruff` for linting and formatt
 2. **Create a virtual environment and install dependencies:**
    ```bash
    uv venv
-   uv pip sync requirements.txt
+   uv pip sync requirements-dev.txt   # runtime + pytest/ruff for development
    ```
 
 3. **Activate the virtual environment:**
@@ -238,7 +254,7 @@ RUN_E2E=1 pytest tests/e2e/ -v  # Provider/model matrix (real API calls; skips w
 ### Install for Development
 
 ```bash
-pip install -e .  # Install in editable mode
+pip install -e ".[dev]"  # Editable mode + pytest/ruff
 ```
 
 ## Configuration
@@ -256,7 +272,10 @@ SERVER_HOST=127.0.0.1                  # default: 127.0.0.1 (localhost only; 0.0
 # Bedrock provider
 AWS_PROFILE=your-profile               # default: saml
 AWS_DEFAULT_REGION=us-east-1           # default: us-east-1
-BEDROCK_MODEL_ID=model-id              # default: us.anthropic.claude-haiku-4-5-20251001-v1:0
+BEDROCK_MODEL_ID=model-id              # optional: pins one model; if set, /model switching is a no-op
+BEDROCK_MODEL_ID_OPUS=model-id         # optional: override the opus profile ID (default: us.anthropic.claude-opus-4-8)
+BEDROCK_MODEL_ID_SONNET=model-id       # optional: override the sonnet profile ID (default: us.anthropic.claude-sonnet-4-6)
+BEDROCK_MODEL_ID_HAIKU=model-id        # optional: override the haiku profile ID (default: us.anthropic.claude-haiku-4-5-20251001-v1:0)
 
 # OpenAI-compatible provider
 OPENAICOMPATIBLE_API_KEY=your-key      # required for openai_compatible
@@ -264,7 +283,7 @@ OPENAICOMPATIBLE_BASE_URL=endpoint-url # provider-specific
 OPENAI_MODEL=model-name                # default: gemini-2.0-flash
 
 # GitHub Copilot provider
-COPILOT_MODEL=claude-sonnet-4.6         # default: claude-sonnet-4.6 (also: gpt-4o, claude-haiku-4.5)
+COPILOT_MODEL=claude-sonnet-4.6         # default: claude-sonnet-4.6 (also: gpt-4o, claude-haiku-4.5); if set, /model switching is a no-op
 COPILOT_OAUTH_TOKEN=your-token         # optional: skip device flow
 COPILOT_TOKEN_FILE=~/.copilot_token    # default: ~/.copilot_token
 
@@ -280,7 +299,8 @@ ANTHROPIC_BASE_URL=http://localhost:8082
 │   ├── __init__.py                   # Package info
 │   ├── main.py                       # Entry point
 │   ├── server.py                     # FastAPI server, routing & streaming
-│   ├── provider.py                   # LLMProvider protocol definition
+│   ├── provider.py                   # LLMProvider protocol + ProviderEntry
+│   ├── registry.py                   # Provider registry - the only file that changes to add one
 │   ├── bedrock.py                    # AWS Bedrock provider
 │   ├── openai_compatible.py          # OpenAI-compatible provider + SSE translation
 │   ├── copilot.py                    # GitHub Copilot auth (OAuth device flow)
@@ -302,9 +322,10 @@ ANTHROPIC_BASE_URL=http://localhost:8082
 └── README.md                         # This file
 ```
 
-**Protocol-Based Architecture**: Extensible design makes adding new providers easy
-- `provider.py` - `LLMProvider` protocol interface
-- `server.py` - FastAPI server with provider routing and API endpoints
+**Registry-Based Architecture**: Extensible design makes adding new providers easy - `server.py` never needs to change
+- `provider.py` - `LLMProvider` protocol + `ProviderEntry` (what a provider registers)
+- `registry.py` - Maps provider names to their `ProviderEntry`; the one file touched to add a provider
+- `server.py` - FastAPI server with routing and API endpoints, talks only to the registry
 - `bedrock.py` - AWS Bedrock provider implementing `LLMProvider`
 - `openai_compatible.py` - OpenAI-compatible provider implementing `LLMProvider`
 
@@ -313,13 +334,23 @@ ANTHROPIC_BASE_URL=http://localhost:8082
 ### Provider Protocol (`provider.py`)
 - `LLMProvider` - Protocol defining provider interface:
   - `completion(request)` - Get completion from LLM
+  - `completion_stream(request)` - Optional: incremental SSE events (providers without it fall back to replay streaming)
   - `count_tokens(request)` - Count tokens for a request
+- `ProviderEntry` - What a provider registers: `name`, `factory`, `describe()`, `validate()`
+- `anthropic_sse()` - Shared Anthropic SSE event formatter
+- `detect_model_family()` - Maps a requested model string to opus/sonnet/haiku for `/model` switching
+
+### Registry (`registry.py`)
+- `get_entry(name)` - Look up a provider's `ProviderEntry`
+- `provider_names()` - List all registered provider names
+- `DEFAULT_PROVIDER` - Provider used when `LLM_PROVIDER` is unset
 
 ### Server Functions (`server.py`)
 - `get_provider_type()` - Determine provider from environment
-- `get_provider()` - Get provider instance (returns `LLMProvider`)
+- `get_provider()` - Get provider instance (returns `LLMProvider`, cached per type)
 - `call_llm_service(request)` - Route requests to providers
 - `count_llm_tokens(request)` - Token counting
+- `validate_provider_config()` - Checked at startup (`main.py`); a provider reporting invalid config exits the process with a clear error instead of starting a server that would 500 on every request
 - `get_provider_info()` - Runtime configuration info
 - `create_message(request)` - `/v1/messages` endpoint (JSON or SSE streaming)
 - `count_tokens(request)` - `/v1/messages/count_tokens` endpoint
@@ -328,27 +359,34 @@ ANTHROPIC_BASE_URL=http://localhost:8082
 
 ### Bedrock Provider (`bedrock.py`)
 - `BedrockProvider` - Provider class implementing `LLMProvider`
-  - `completion(request)` - Get completion from AWS Bedrock
+  - `completion(request)` / `completion_stream(request)` - Get a completion from AWS Bedrock, JSON or incremental SSE
   - `count_tokens(request)` - Count tokens for Bedrock
+- `build_converse_params(request, model_id)` - Shared Converse API param builder (sync + streaming)
 - `call_bedrock_converse(request)` - AWS Bedrock API calls
+- `stream_bedrock_as_anthropic()` - Bedrock Converse stream → Anthropic SSE events (incremental)
 - `count_request_tokens(request)` - Bedrock token counting
 - `get_bedrock_client()` - AWS client setup
 - `convert_to_bedrock_messages()` - Claude → Bedrock format
 - `create_claude_response()` - Bedrock → Claude format
+- `PROVIDER` - This provider's `ProviderEntry`, registered in `registry.py`
 
 ### OpenAI-Compatible Provider (`openai_compatible.py`)
 - `OpenAICompatibleProvider` - Provider class implementing `LLMProvider`
-  - `completion(request)` - Get completion from OpenAI-compatible provider
+  - `completion(request)` / `completion_stream(request)` - Get a completion, JSON or incremental SSE
   - `count_tokens(request)` - Count tokens for OpenAI
 - `call_openai_compatible_chat(request)` - OpenAI API calls
 - `count_openai_tokens(request)` - Token estimation
 - `get_openai_compatible_client()` - HTTP session setup
 - `convert_to_openai_messages()` - Claude → OpenAI format
 - `create_claude_response_from_openai()` - OpenAI → Claude format
+- `build_openai_payload()` - Shared Chat Completions payload builder (sync + streaming)
+- `post_streaming_completion()` - Shared streaming POST + error handling, used by this provider and Copilot
 - `stream_openai_as_anthropic()` - OpenAI SSE chunks → Anthropic SSE events (incremental)
 - `aggregate_openai_stream()` - Assemble a full response from an SSE stream
+- `PROVIDER` - This provider's `ProviderEntry`, registered in `registry.py`
 
 ### GitHub Copilot Provider (`copilot_provider.py` + `copilot.py`)
 - `CopilotProvider` - Provider class implementing `LLMProvider`
   - `completion(request)` / `completion_stream(request)` - via Copilot's OpenAI-compatible API
 - `CopilotAuth` (`copilot.py`) - OAuth device flow + session token lifecycle
+- `PROVIDER` - This provider's `ProviderEntry`, registered in `registry.py`

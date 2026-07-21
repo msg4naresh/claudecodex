@@ -336,7 +336,7 @@ function selectText(node) {{
 
 _PROVIDER_SWITCH_SNIPPETS = {
     "copilot": "export LLM_PROVIDER=copilot\n"
-               "export COPILOT_MODEL=claude-sonnet-4.6   # or gpt-4o, claude-haiku-4.5",
+               "# Optional pin: export COPILOT_MODEL=claude-sonnet-4.6",
     "bedrock": "export LLM_PROVIDER=bedrock\n"
                "export AWS_PROFILE=your-profile\n"
                "export AWS_DEFAULT_REGION=us-east-1",

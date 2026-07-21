@@ -680,6 +680,176 @@ class TestCopilotStreamTransportErrors:
         error_response.close.assert_called_once()
 
 
+class TestMaxTokensRetry:
+    """Some newer models (observed live: gpt-5.4 via Copilot) reject the
+    legacy max_tokens param and require max_completion_tokens instead. This
+    isn't predictable per model family (gpt-5-mini and gpt-4.1 both accept
+    max_tokens fine), so the fix reacts to the actual error and retries
+    once with the corrected payload, rather than guessing which models
+    need it."""
+
+    MAX_TOKENS_ERROR_BODY = (
+        '{"error": {"message": "Unsupported parameter: \'max_tokens\' is '
+        'not supported with this model. Use \'max_completion_tokens\' '
+        'instead."}}'
+    )
+
+    def test_non_streaming_retries_with_corrected_param(self):
+        from claudecodex.openai_compatible import call_openai_compatible_chat
+        from requests.exceptions import HTTPError
+
+        error_response = MagicMock()
+        error_response.status_code = 400
+        error_response.text = self.MAX_TOKENS_ERROR_BODY
+        error_response.json.return_value = json.loads(self.MAX_TOKENS_ERROR_BODY)
+
+        ok_response = MagicMock()
+        ok_response.raise_for_status.return_value = None
+        ok_response.json.return_value = {
+            "choices": [{"message": {"role": "assistant", "content": "PONG"},
+                         "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2},
+        }
+
+        client = MagicMock()
+        client.base_url = "https://api.example"
+
+        def post_side_effect(url, json=None, timeout=None, stream=None):
+            if "max_completion_tokens" in json:
+                return ok_response
+            raise HTTPError(response=error_response)
+
+        client.post.side_effect = post_side_effect
+
+        request = MessagesRequest(
+            model="m", max_tokens=500,
+            messages=[Message(role="user", content="hi")]
+        )
+        result = call_openai_compatible_chat(request, client=client, model_id="gpt-5.4")
+
+        assert result.content[0].text == "PONG"
+        assert client.post.call_count == 2
+        second_call_payload = client.post.call_args_list[1].kwargs["json"]
+        assert "max_tokens" not in second_call_payload
+        assert second_call_payload["max_completion_tokens"] == 500
+
+    def test_streaming_retries_with_corrected_param(self):
+        from claudecodex.openai_compatible import post_streaming_completion
+
+        error_response = MagicMock()
+        error_response.status_code = 400
+        error_response.text = self.MAX_TOKENS_ERROR_BODY
+
+        ok_response = MagicMock()
+        ok_response.status_code = 200
+
+        client = MagicMock()
+        client.base_url = "https://api.example"
+
+        def post_side_effect(url, json=None, timeout=None, stream=None):
+            return ok_response if "max_completion_tokens" in json else error_response
+
+        client.post.side_effect = post_side_effect
+
+        result = post_streaming_completion(
+            client, {"max_tokens": 500, "model": "gpt-5.4"}, "OpenAI-compatible"
+        )
+        assert result is ok_response
+        assert client.post.call_count == 2
+        error_response.close.assert_called_once()
+
+    def test_successful_stream_is_not_read_before_translation(self):
+        from claudecodex.openai_compatible import post_streaming_completion
+
+        class StreamingResponse:
+            status_code = 200
+
+            @property
+            def text(self):
+                raise AssertionError("successful stream body was read eagerly")
+
+        response = StreamingResponse()
+        client = MagicMock()
+        client.base_url = "https://api.example"
+        client.post.return_value = response
+
+        result = post_streaming_completion(
+            client, {"max_tokens": 500}, "OpenAI-compatible"
+        )
+
+        assert result is response
+
+    def test_other_400_errors_do_not_trigger_retry(self):
+        from claudecodex.openai_compatible import post_streaming_completion
+
+        error_response = MagicMock()
+        error_response.status_code = 400
+        error_response.text = '{"error": {"message": "invalid request"}}'
+
+        client = MagicMock()
+        client.base_url = "https://api.example"
+        client.post.return_value = error_response
+
+        with pytest.raises(HTTPException):
+            post_streaming_completion(
+                client, {"max_tokens": 500}, "OpenAI-compatible"
+            )
+        assert client.post.call_count == 1
+
+
+class TestOpenAICompatibleStreaming:
+    """OpenAICompatibleProvider.completion_stream reuses the shared helper
+    and translator - same true-streaming path as Copilot, no session
+    invalidation (no auth session to invalidate for a plain API key)."""
+
+    def _request(self):
+        return MessagesRequest(
+            model="m", max_tokens=10,
+            messages=[Message(role="user", content="hi")]
+        )
+
+    def test_completion_stream_returns_translated_events(self, monkeypatch):
+        from claudecodex.openai_compatible import OpenAICompatibleProvider
+
+        client = MagicMock()
+        client.base_url = "https://api.example"
+        response = MagicMock()
+        response.status_code = 200
+        response.iter_lines.return_value = iter([
+            b'data: {"choices": [{"delta": {"content": "hi"}, "finish_reason": "stop"}]}',
+            b"data: [DONE]",
+        ])
+        client.post.return_value = response
+
+        monkeypatch.setattr(
+            "claudecodex.openai_compatible.get_openai_compatible_client",
+            lambda: client,
+        )
+
+        provider = OpenAICompatibleProvider()
+        events = list(provider.completion_stream(self._request()))
+        assert any("message_start" in e for e in events)
+        assert any("hi" in e for e in events)
+
+    def test_timeout_maps_to_529(self, monkeypatch):
+        import requests as _requests
+        from claudecodex.openai_compatible import OpenAICompatibleProvider
+
+        client = MagicMock()
+        client.base_url = "https://api.example"
+        client.post.side_effect = _requests.exceptions.Timeout("timed out")
+        monkeypatch.setattr(
+            "claudecodex.openai_compatible.get_openai_compatible_client",
+            lambda: client,
+        )
+
+        provider = OpenAICompatibleProvider()
+        with pytest.raises(HTTPException) as exc_info:
+            provider.completion_stream(self._request())
+        assert exc_info.value.status_code == 529
+        assert "OpenAI-compatible" in exc_info.value.detail
+
+
 if __name__ == "__main__":
     # Allow running tests directly
     pytest.main([__file__, "-v"])

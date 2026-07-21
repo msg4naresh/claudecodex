@@ -17,20 +17,21 @@ Features:
     - Claude API compatible endpoints
 """
 
+import sys
 import uvicorn
 import logging
 import os
 from dotenv import load_dotenv
 
-from claudecodex.server import app, get_provider_info
+from claudecodex.server import app, get_provider_info, get_provider_type, validate_provider_config
 
 
 def main():
     """
     Start the Claude Codex server.
 
-    Loads configuration, displays provider info, and starts the server.
-    All server logic is contained in server.py for easy hacking.
+    Loads configuration, validates it, displays provider info, and starts
+    the server. All server logic is contained in server.py for easy hacking.
     """
     # Load environment variables from .env file
     load_dotenv()
@@ -42,6 +43,21 @@ def main():
 
     # Setup logging for main entry point
     logging.basicConfig(level=logging.INFO)
+
+    # Fail fast on an unusable provider config instead of starting a
+    # server that would 500 on every request
+    try:
+        provider_type = get_provider_type()
+    except ValueError as e:
+        print(f"Configuration error: {e}")
+        sys.exit(1)
+
+    if not validate_provider_config():
+        print(
+            f"Configuration error: provider '{provider_type}' is missing "
+            f"required configuration (see README for required env vars)."
+        )
+        sys.exit(1)
 
     # Display minimal startup information
     provider_info = get_provider_info()

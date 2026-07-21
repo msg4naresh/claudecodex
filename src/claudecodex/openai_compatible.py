@@ -20,7 +20,7 @@ import os
 import json
 import uuid
 import logging
-from typing import List, Dict, Any, Optional, Union
+from typing import Callable, List, Dict, Any, Optional, Union
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -39,6 +39,7 @@ from claudecodex.models import (
     TokenCountRequest,
     TokenCountResponse,
 )
+from claudecodex.provider import ProviderEntry, anthropic_sse
 
 
 logger = logging.getLogger(__name__)
@@ -366,16 +367,79 @@ def aggregate_openai_stream(response) -> Dict[str, Any]:
     }
 
 
-def _anthropic_sse(event: str, data: Dict[str, Any]) -> str:
-    """Format one Anthropic-style server-sent event."""
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
-
-
 OPENAI_STOP_REASONS = {
     "tool_calls": "tool_use",
     "length": "max_tokens",
     "stop": "end_turn",
 }
+
+
+def post_streaming_completion(
+    client: requests.Session,
+    payload: Dict[str, Any],
+    provider_label: str,
+    on_response: Optional[Callable[[requests.Response], None]] = None,
+) -> requests.Response:
+    """POST a streaming chat-completion request with shared transport and
+    error handling, used by every OpenAI-compatible-shaped provider
+    (generic OpenAI-compatible, Copilot).
+
+    on_response, if given, runs after each response arrives but before the
+    status>=400 check - e.g. so a provider can invalidate a cached auth
+    session on 401 before the passthrough error is raised.
+
+    If the model rejects `max_tokens` in favor of `max_completion_tokens`
+    (observed live: gpt-5.4 via Copilot, while gpt-5-mini and gpt-4.1
+    accept the legacy name fine), retries once with the corrected payload.
+    """
+    def attempt(attempt_payload: Dict[str, Any]) -> requests.Response:
+        try:
+            response = client.post(
+                f"{client.base_url}/chat/completions",
+                json=attempt_payload, timeout=120, stream=True
+            )
+        except (requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError) as e:
+            # Retryable transport failure: map to 529 (overloaded) like the
+            # non-streaming path so Claude Code retries
+            raise HTTPException(
+                status_code=529, detail=f"{provider_label} connection error: {e}"
+            ) from e
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(
+                status_code=500, detail=f"{provider_label} request failed: {e}"
+            ) from e
+
+        if on_response:
+            on_response(response)
+        return response
+
+    response = attempt(payload)
+
+    if (response.status_code == 400
+            and "max_tokens" in payload
+            and _is_max_tokens_param_error(response.status_code, response.text)):
+        response.close()
+        logger.info(
+            "Model rejected max_tokens; retrying with max_completion_tokens"
+        )
+        retry_payload = dict(payload)
+        retry_payload["max_completion_tokens"] = retry_payload.pop("max_tokens")
+        response = attempt(retry_payload)
+
+    if response.status_code >= 400:
+        try:
+            detail = response.text[:200]
+        finally:
+            response.close()
+        passthrough = (400, 401, 403, 404, 413, 429)
+        raise HTTPException(
+            status_code=response.status_code
+            if response.status_code in passthrough else 529,
+            detail=f"{provider_label} error: {detail}"
+        )
+
+    return response
 
 
 def stream_openai_as_anthropic(response, model_id: str):
@@ -399,7 +463,7 @@ def stream_openai_as_anthropic(response, model_id: str):
     # lifetime: the client can cancel at ANY yield (GeneratorExit), including
     # right after message_start.
     try:
-        yield _anthropic_sse("message_start", {
+        yield anthropic_sse("message_start", {
             "type": "message_start",
             "message": {
                 "id": message_id, "type": "message", "role": "assistant",
@@ -436,11 +500,11 @@ def stream_openai_as_anthropic(response, model_id: str):
                 if not text_open:
                     block_index += 1
                     text_open = True
-                    yield _anthropic_sse("content_block_start", {
+                    yield anthropic_sse("content_block_start", {
                         "type": "content_block_start", "index": block_index,
                         "content_block": {"type": "text", "text": ""}
                     })
-                yield _anthropic_sse("content_block_delta", {
+                yield anthropic_sse("content_block_delta", {
                     "type": "content_block_delta", "index": block_index,
                     "delta": {"type": "text_delta", "text": delta["content"]}
                 })
@@ -459,7 +523,7 @@ def stream_openai_as_anthropic(response, model_id: str):
                     entry["arguments"] += function["arguments"]
 
         if text_open:
-            yield _anthropic_sse(
+            yield anthropic_sse(
                 "content_block_stop",
                 {"type": "content_block_stop", "index": block_index}
             )
@@ -467,7 +531,7 @@ def stream_openai_as_anthropic(response, model_id: str):
         for openai_index in sorted(tool_calls):
             entry = tool_calls[openai_index]
             block_index += 1
-            yield _anthropic_sse("content_block_start", {
+            yield anthropic_sse("content_block_start", {
                 "type": "content_block_start", "index": block_index,
                 "content_block": {
                     "type": "tool_use",
@@ -477,19 +541,19 @@ def stream_openai_as_anthropic(response, model_id: str):
                 }
             })
             if entry["arguments"]:
-                yield _anthropic_sse("content_block_delta", {
+                yield anthropic_sse("content_block_delta", {
                     "type": "content_block_delta", "index": block_index,
                     "delta": {
                         "type": "input_json_delta",
                         "partial_json": entry["arguments"]
                     }
                 })
-            yield _anthropic_sse(
+            yield anthropic_sse(
                 "content_block_stop",
                 {"type": "content_block_stop", "index": block_index}
             )
 
-        yield _anthropic_sse("message_delta", {
+        yield anthropic_sse("message_delta", {
             "type": "message_delta",
             "delta": {
                 "stop_reason": OPENAI_STOP_REASONS.get(finish_reason, "end_turn"),
@@ -497,7 +561,7 @@ def stream_openai_as_anthropic(response, model_id: str):
             },
             "usage": {"output_tokens": usage.get("completion_tokens", 0)}
         })
-        yield _anthropic_sse("message_stop", {"type": "message_stop"})
+        yield anthropic_sse("message_stop", {"type": "message_stop"})
     finally:
         response.close()
 
@@ -622,6 +686,77 @@ def build_openai_payload(request: MessagesRequest, model_id: str) -> Dict[str, A
     return payload
 
 
+def _map_openai_request_exception(e: RequestException) -> HTTPException:
+    """Translate a requests exception from an OpenAI-compatible call into
+    the matching HTTPException, mapping status codes so Claude Code's
+    retry logic behaves correctly."""
+    if hasattr(e, "response") and e.response is not None:
+        try:
+            error_data = e.response.json()
+
+            # Handle different error response formats
+            # Gemini returns errors as a list: [{"error": {...}}]
+            # OpenAI returns errors as a dict: {"error": {...}}
+            if isinstance(error_data, list) and len(error_data) > 0:
+                error_obj = error_data[0].get("error", {})
+            else:
+                error_obj = error_data.get("error", {})
+
+            error_message = error_obj.get("message", str(e))
+            status_code = e.response.status_code
+
+            # Map OpenAI error codes to appropriate HTTP status codes
+            if status_code == 401:
+                error_message = f"OpenAI authentication failed: {error_message}"
+            elif status_code == 403:
+                error_message = f"OpenAI access forbidden: {error_message}"
+            elif status_code == 429:
+                error_message = f"OpenAI rate limit exceeded: {error_message}"
+            elif status_code >= 500:
+                error_message = f"OpenAI server error: {error_message}"
+            else:
+                error_message = f"OpenAI API error: {error_message}"
+
+            logger.error(f"OpenAI API error ({status_code}): {error_message}")
+            return HTTPException(status_code=status_code, detail=error_message)
+
+        except json.JSONDecodeError:
+            error_message = f"OpenAI API error: {e.response.text[:200]}"
+            logger.error(error_message)
+            return HTTPException(
+                status_code=e.response.status_code, detail=error_message
+            )
+    else:
+        # Timeouts and connection failures are retryable: surface as 529
+        # (overloaded) so Claude Code's retry logic kicks in.
+        error_message = f"OpenAI connection error: {str(e)}"
+        logger.error(error_message)
+        return HTTPException(status_code=529, detail=error_message)
+
+
+def _is_max_tokens_param_error(status_code: int, body_text: str) -> bool:
+    """Detect the specific 'max_tokens is not supported, use
+    max_completion_tokens instead' error some newer models return (observed
+    live: gpt-5.4 via Copilot rejects it while gpt-5-mini and gpt-4.1
+    accept it fine - not a predictable per-family rule, so we react to the
+    actual error instead of guessing which models need it)."""
+    return (
+        status_code == 400
+        and "max_completion_tokens" in body_text
+        and "max_tokens" in body_text
+    )
+
+
+def _wants_max_completion_tokens(e: RequestException) -> bool:
+    if not (hasattr(e, "response") and e.response is not None):
+        return False
+    try:
+        text = e.response.text
+    except Exception:
+        return False
+    return _is_max_tokens_param_error(e.response.status_code, text)
+
+
 def call_openai_compatible_chat(
     request: MessagesRequest,
     client: Optional[requests.Session] = None,
@@ -629,75 +764,49 @@ def call_openai_compatible_chat(
     stream_upstream: bool = False,
 ) -> MessagesResponse:
     """Execute Claude API request via OpenAI-compatible provider."""
-    try:
-        # Get OpenAI client and model
-        openai_client = client or get_openai_compatible_client()
-        model_id = model_id or get_openai_compatible_model()
+    openai_client = client or get_openai_compatible_client()
+    model_id = model_id or get_openai_compatible_model()
+    payload = build_openai_payload(request, model_id)
 
-        payload = build_openai_payload(request, model_id)
-
-        # Make the API call
+    def make_request(attempt_payload: Dict[str, Any]):
         if stream_upstream:
-            payload["stream"] = True
+            attempt_payload = {**attempt_payload, "stream": True}
             response = openai_client.post(
                 f"{openai_client.base_url}/chat/completions",
-                json=payload, timeout=120, stream=True
+                json=attempt_payload, timeout=120, stream=True
             )
             response.raise_for_status()
-            response_data = aggregate_openai_stream(response)
+            return aggregate_openai_stream(response)
         else:
             response = openai_client.post(
-                f"{openai_client.base_url}/chat/completions", json=payload, timeout=120
+                f"{openai_client.base_url}/chat/completions",
+                json=attempt_payload, timeout=120
             )
             response.raise_for_status()
-            response_data = response.json()
+            return response.json()
+
+    try:
+        try:
+            response_data = make_request(payload)
+        except RequestException as e:
+            if "max_tokens" in payload and _wants_max_completion_tokens(e):
+                logger.info(
+                    "Model rejected max_tokens; retrying with "
+                    "max_completion_tokens"
+                )
+                retry_payload = dict(payload)
+                retry_payload["max_completion_tokens"] = (
+                    retry_payload.pop("max_tokens")
+                )
+                response_data = make_request(retry_payload)
+            else:
+                raise
 
         # Convert response back to Claude format
         return create_claude_response_from_openai(response_data, model_id)
 
     except RequestException as e:
-        if hasattr(e, "response") and e.response is not None:
-            try:
-                error_data = e.response.json()
-
-                # Handle different error response formats
-                # Gemini returns errors as a list: [{"error": {...}}]
-                # OpenAI returns errors as a dict: {"error": {...}}
-                if isinstance(error_data, list) and len(error_data) > 0:
-                    error_obj = error_data[0].get("error", {})
-                else:
-                    error_obj = error_data.get("error", {})
-
-                error_message = error_obj.get("message", str(e))
-                status_code = e.response.status_code
-
-                # Map OpenAI error codes to appropriate HTTP status codes
-                if status_code == 401:
-                    error_message = f"OpenAI authentication failed: {error_message}"
-                elif status_code == 403:
-                    error_message = f"OpenAI access forbidden: {error_message}"
-                elif status_code == 429:
-                    error_message = f"OpenAI rate limit exceeded: {error_message}"
-                elif status_code >= 500:
-                    error_message = f"OpenAI server error: {error_message}"
-                else:
-                    error_message = f"OpenAI API error: {error_message}"
-
-                logger.error(f"OpenAI API error ({status_code}): {error_message}")
-                raise HTTPException(status_code=status_code, detail=error_message)
-
-            except json.JSONDecodeError:
-                error_message = f"OpenAI API error: {e.response.text[:200]}"
-                logger.error(error_message)
-                raise HTTPException(
-                    status_code=e.response.status_code, detail=error_message
-                )
-        else:
-            # Timeouts and connection failures are retryable: surface as 529
-            # (overloaded) so Claude Code's retry logic kicks in.
-            error_message = f"OpenAI connection error: {str(e)}"
-            logger.error(error_message)
-            raise HTTPException(status_code=529, detail=error_message)
+        raise _map_openai_request_exception(e) from e
 
     except json.JSONDecodeError as e:
         error_message = f"Failed to parse OpenAI response: {str(e)}"
@@ -732,6 +841,39 @@ class OpenAICompatibleProvider:
         """Get completion from OpenAI-compatible provider (converts to OpenAI Chat Completions format)."""
         return call_openai_compatible_chat(request)
 
+    def completion_stream(self, request: MessagesRequest):
+        """Stream a completion as Anthropic SSE events, incrementally."""
+        client = get_openai_compatible_client()
+        model_id = get_openai_compatible_model()
+
+        payload = build_openai_payload(request, model_id)
+        payload["stream"] = True
+
+        response = post_streaming_completion(client, payload, "OpenAI-compatible")
+        return stream_openai_as_anthropic(response, model_id)
+
     def count_tokens(self, request: TokenCountRequest) -> TokenCountResponse:
         """Count tokens for a request."""
         return count_openai_tokens(request)
+
+
+def describe_openai_compatible() -> Dict[str, Any]:
+    """Runtime info for /, /health, /dashboard."""
+    return {
+        "provider": "openai_compatible",
+        "model": get_openai_compatible_model(),
+        "base_url": get_openai_compatible_base_url(),
+        "api_key_configured": bool(os.environ.get("OPENAICOMPATIBLE_API_KEY"))
+    }
+
+
+def validate_openai_compatible_config() -> bool:
+    return bool(os.environ.get("OPENAICOMPATIBLE_API_KEY"))
+
+
+PROVIDER = ProviderEntry(
+    name="openai_compatible",
+    factory=OpenAICompatibleProvider,
+    describe=describe_openai_compatible,
+    validate=validate_openai_compatible_config,
+)

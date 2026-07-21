@@ -2,13 +2,36 @@
 Provider interface for LLM providers.
 """
 
-from typing import Protocol
+import json
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Optional, Protocol
 from claudecodex.models import (
     MessagesRequest,
     MessagesResponse,
     TokenCountRequest,
     TokenCountResponse
 )
+
+
+def anthropic_sse(event: str, data: Dict[str, Any]) -> str:
+    """Format one Anthropic-style server-sent event. Shared by every
+    streaming provider translator (openai_compatible.py, bedrock.py)."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def detect_model_family(requested_model: Optional[str]) -> Optional[str]:
+    """Detect which Claude model family a client requested, from its model
+    string. Used so providers hosting real Claude models (Bedrock, Copilot)
+    can honor Claude Code's /model switching. Returns "opus", "sonnet",
+    "haiku", or None if the string doesn't name a recognizable family.
+    """
+    if not requested_model:
+        return None
+    lowered = requested_model.lower()
+    for family in ("opus", "sonnet", "haiku"):
+        if family in lowered:
+            return family
+    return None
 
 
 class LLMProvider(Protocol):
@@ -55,3 +78,16 @@ class LLMProvider(Protocol):
             Token count response with input token count
         """
         ...
+
+
+@dataclass(frozen=True)
+class ProviderEntry:
+    """Everything the registry needs to offer one provider, owned by that
+    provider's own module. server.py talks only to the registry - it never
+    branches on a provider's name, env vars, or metadata shape.
+    """
+
+    name: str
+    factory: Callable[[], LLMProvider]
+    describe: Callable[[], Dict[str, Any]]  # runtime info for /, /health, /dashboard
+    validate: Callable[[], bool]  # True if config looks usable at startup

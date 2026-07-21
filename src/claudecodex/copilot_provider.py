@@ -5,7 +5,8 @@ from __future__ import annotations
 import os
 import logging
 import threading
-from typing import Optional
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 import requests
 from fastapi import HTTPException
@@ -14,6 +15,7 @@ from claudecodex.copilot import (
     CopilotAuth,
     COPILOT_HEADERS,
     COPILOT_BASE_URL,
+    COPILOT_TOKEN_ENDPOINT,
 )
 from claudecodex.models import (
     MessagesRequest,
@@ -26,15 +28,34 @@ from claudecodex.openai_compatible import (
     call_openai_compatible_chat,
     count_tokens_from_messages_openai,
     build_openai_payload,
+    post_streaming_completion,
     stream_openai_as_anthropic,
 )
+from claudecodex.provider import ProviderEntry, detect_model_family
 
 logger = logging.getLogger(__name__)
 
+# Verified against Copilot's live /models endpoint - Copilot uses dots, not
+# hyphens, in Claude model IDs (e.g. "claude-sonnet-4.6").
+_COPILOT_FAMILY_MODELS = {
+    "opus": "claude-opus-4.8",
+    "sonnet": "claude-sonnet-4.6",
+    "haiku": "claude-haiku-4.5",
+}
 
-def get_copilot_model() -> str:
-    """Return configured Copilot model (defaults to claude-sonnet-4.6)."""
-    return os.environ.get("COPILOT_MODEL", "claude-sonnet-4.6")
+
+def get_copilot_model(requested_model: Optional[str] = None) -> str:
+    """Resolve the Copilot model to use for a request.
+
+    COPILOT_MODEL, if set, always wins (explicit operator pin). Otherwise,
+    honor Claude Code's /model switching by mapping the requested model's
+    family (opus/sonnet/haiku) to the matching Copilot model ID, falling
+    back to the sonnet default when the family can't be determined.
+    """
+    if "COPILOT_MODEL" in os.environ:
+        return os.environ["COPILOT_MODEL"]
+    family = detect_model_family(requested_model)
+    return _COPILOT_FAMILY_MODELS.get(family, _COPILOT_FAMILY_MODELS["sonnet"])
 
 
 class CopilotProvider:
@@ -69,7 +90,7 @@ class CopilotProvider:
     def completion(self, request: MessagesRequest) -> MessagesResponse:
         """Route completion through Copilot's OpenAI-compatible endpoint."""
         client = self._get_client()
-        model_id = get_copilot_model()
+        model_id = get_copilot_model(request.model)
 
         try:
             # Copilot only returns tool_calls for Claude models in streaming
@@ -92,49 +113,53 @@ class CopilotProvider:
     def completion_stream(self, request: MessagesRequest):
         """Stream a completion as Anthropic SSE events, incrementally."""
         client = self._get_client()
-        model_id = get_copilot_model()
+        model_id = get_copilot_model(request.model)
 
         payload = build_openai_payload(request, model_id)
         payload["stream"] = True
 
-        try:
-            response = client.post(
-                f"{client.base_url}/chat/completions",
-                json=payload, timeout=120, stream=True
-            )
-        except (requests.exceptions.Timeout,
-                requests.exceptions.ConnectionError) as e:
-            # Retryable transport failure: map to 529 (overloaded) like the
-            # non-streaming path so Claude Code retries
-            raise HTTPException(
-                status_code=529, detail=f"Copilot connection error: {e}"
-            ) from e
-        except requests.exceptions.RequestException as e:
-            raise HTTPException(
-                status_code=500, detail=f"Copilot request failed: {e}"
-            ) from e
+        def invalidate_session_on_401(response: requests.Response) -> None:
+            if response.status_code == 401:
+                self._auth.invalidate_session()
+                with self._client_lock:
+                    self._client = None
+                    self._session_token = None
 
-        if response.status_code == 401:
-            # Invalidate cached session so the next request re-authenticates
-            self._auth.invalidate_session()
-            with self._client_lock:
-                self._client = None
-                self._session_token = None
-        if response.status_code >= 400:
-            try:
-                detail = response.text[:200]
-            finally:
-                response.close()
-            passthrough = (400, 401, 403, 404, 413, 429)
-            raise HTTPException(
-                status_code=response.status_code
-                if response.status_code in passthrough else 529,
-                detail=f"Copilot error: {detail}"
-            )
-
+        response = post_streaming_completion(
+            client, payload, "Copilot", on_response=invalidate_session_on_401
+        )
         return stream_openai_as_anthropic(response, model_id)
 
     def count_tokens(self, request: TokenCountRequest) -> TokenCountResponse:
         """Estimate token count using the OpenAI-compatible heuristic."""
         token_count = count_tokens_from_messages_openai(request.messages, request.system)
         return TokenCountResponse(input_tokens=token_count)
+
+
+def describe_copilot() -> Dict[str, Any]:
+    """Runtime info for /, /health, /dashboard."""
+    token_file = os.environ.get("COPILOT_TOKEN_FILE")
+    token_path = (
+        Path(token_file).expanduser() if token_file else Path.home() / ".copilot_token"
+    )
+    return {
+        "provider": "copilot",
+        "model": get_copilot_model(),
+        "base_url": COPILOT_BASE_URL,
+        "token_cached": token_path.exists(),
+        "token_endpoint": COPILOT_TOKEN_ENDPOINT,
+    }
+
+
+def validate_copilot_config() -> bool:
+    """Copilot can always fall back to the OAuth device flow, so treat as
+    valid regardless of whether a token is already cached."""
+    return True
+
+
+PROVIDER = ProviderEntry(
+    name="copilot",
+    factory=CopilotProvider,
+    describe=describe_copilot,
+    validate=validate_copilot_config,
+)

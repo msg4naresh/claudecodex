@@ -124,6 +124,73 @@ def test_stream_failure_emits_error_event(monkeypatch):
     assert "upstream vanished" in response.text
 
 
+def test_non_streaming_log_uses_selected_model(monkeypatch):
+    """Request-specific model switching is reflected in monitoring data."""
+    from claudecodex import server
+    from claudecodex.models import ContentBlockText, MessagesResponse, Usage
+
+    class SwitchingProvider:
+        def completion(self, request):
+            return MessagesResponse(
+                id="msg_test",
+                model="selected-opus",
+                content=[ContentBlockText(type="text", text="ok")],
+                stop_reason="end_turn",
+                usage=Usage(input_tokens=1, output_tokens=1),
+            )
+
+    logged = []
+    monkeypatch.setitem(server._provider_instances, "bedrock", SwitchingProvider())
+    monkeypatch.setattr(
+        server, "log_request_response", lambda **kwargs: logged.append(kwargs)
+    )
+
+    response = client.post("/v1/messages", json={
+        "model": "claude-opus-4-6",
+        "max_tokens": 10,
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+
+    assert response.status_code == 200
+    assert logged[0]["provider_info"]["model"] == "selected-opus"
+
+
+def test_streaming_log_uses_selected_model(monkeypatch):
+    """Streaming monitoring reads the actual model from message_start."""
+    from claudecodex import server
+
+    class SwitchingStreamProvider:
+        def completion_stream(self, request):
+            yield server.sse_event("message_start", {
+                "type": "message_start",
+                "message": {"model": "selected-haiku"},
+            })
+            yield server.sse_event("message_delta", {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 1},
+            })
+            yield server.sse_event("message_stop", {"type": "message_stop"})
+
+    logged = []
+    monkeypatch.setitem(
+        server._provider_instances, "bedrock", SwitchingStreamProvider()
+    )
+    monkeypatch.setattr(
+        server, "log_request_response", lambda **kwargs: logged.append(kwargs)
+    )
+
+    response = client.post("/v1/messages", json={
+        "model": "claude-haiku-4-5",
+        "max_tokens": 10,
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+
+    assert response.status_code == 200
+    assert logged[0]["provider_info"]["model"] == "selected-haiku"
+
+
 def test_bedrock_error_handling(mock_bedrock_client):
     """Test error handling when AWS Bedrock API fails."""
     from botocore.exceptions import ClientError

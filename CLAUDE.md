@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Setup
 uv venv                                     # Create virtual environment
 source .venv/bin/activate                   # Activate (macOS/Linux)
-uv pip sync requirements.txt                # Install dependencies
+uv pip sync requirements-dev.txt            # Install runtime + development dependencies
 
 # Running
 claudecodex                                 # Start server (after installation)
@@ -31,6 +31,25 @@ pytest tests/unit/test_api_endpoints.py::TestMessages::test_messages_endpoint -v
 # Provider-specific testing
 LLM_PROVIDER=bedrock pytest tests/integration/test_bedrock_integration.py -v
 LLM_PROVIDER=openai_compatible pytest tests/integration/test_gemini_integration.py -v
+```
+
+## Troubleshooting Commands
+
+```bash
+# "address already in use" on startup (SERVER_PORT default: 8082)
+lsof -nP -iTCP:8082 -sTCP:LISTEN            # Find the process holding the port
+kill $(lsof -t -nP -iTCP:8082 -sTCP:LISTEN) # Stop it
+
+# claudecodex running stale code after an edit (a prior `pip install .`
+# leaves a non-editable copy in site-packages that shadows src/)
+python -c "import claudecodex.server as s; print(s.__file__)"  # should print a path under src/
+rm -rf venv/lib/python3.11/site-packages/claudecodex && pip install -e .
+
+# Force Copilot to re-authenticate (device flow)
+rm ~/.copilot_token
+
+# Watch requests live instead of the /dashboard UI
+tail -f logs/requests.log
 ```
 
 ## Architecture Overview
@@ -60,34 +79,45 @@ AWS Bedrock / OpenAI / Gemini / Local LLM
 
 ### Core Source Files
 
-**`src/claudecodex/main.py`** (62 lines)
+**`src/claudecodex/main.py`**
 - Entry point for the `claudecodex` CLI command
 - Loads environment variables from `.env`
-- Starts FastAPI server on configured port (default: 8082)
+- Fails fast with a clear error if the selected provider's config is invalid (`validate_provider_config()`)
+- Starts FastAPI server on configured port (default: 8082, bound to 127.0.0.1 unless `SERVER_HOST` overrides)
 - Displays active provider on startup
 
-**`src/claudecodex/server.py`** (278 lines)
-- FastAPI application with all endpoints: `/v1/messages`, `/v1/messages/count_tokens`, `/health`
-- Provider routing logic: selects active provider based on env vars
+**`src/claudecodex/provider.py`**
+- `LLMProvider` protocol: `completion()`, optional `completion_stream()`, `count_tokens()`
+- `ProviderEntry` - what each provider registers (name, factory, describe, validate)
+- Shared cross-provider utilities: `anthropic_sse()`, `detect_model_family()`
+
+**`src/claudecodex/registry.py`**
+- Maps provider names to their `ProviderEntry`
+- The **only file** touched to add a new provider - `server.py` never changes
+
+**`src/claudecodex/server.py`**
+- FastAPI application with all endpoints: `/v1/messages`, `/v1/messages/count_tokens`, `/health`, `/`, `/dashboard`
+- Provider routing: talks only to `registry.py`, has no per-provider knowledge
+- SSE streaming for `/v1/messages` when the provider supports `completion_stream`
 - Request/response logging with performance metrics
 - CORS middleware for cross-origin requests
 - Error handling and validation
 
-**`src/claudecodex/bedrock.py`** (327 lines)
+**`src/claudecodex/bedrock.py`**
 - AWS Bedrock provider implementation
 - Message translation: Claude API ↔ AWS Bedrock Converse API format
 - Tool calling support (tool_use, tool_result conversion)
+- Incremental streaming via `converse_stream`
 - Token counting via Bedrock API
-- Retry logic with exponential backoff
 
-**`src/claudecodex/openai_compatible.py`** (447 lines)
+**`src/claudecodex/openai_compatible.py`**
 - OpenAI-compatible provider supporting: OpenAI, Google Gemini, Azure, Ollama, LM Studio, custom endpoints
 - Message translation: Claude API ↔ OpenAI Chat Completions format
 - Tool calling support (function calling schema conversion)
+- Incremental streaming, shared by this provider and Copilot
 - Token estimation (with character-based fallback)
-- Retry strategy with exponential backoff
 
-**`src/claudecodex/models.py`** (114 lines)
+**`src/claudecodex/models.py`**
 - Pydantic models for Claude API schema
 - Request models: `MessagesRequest`, `TokenCountRequest`, `Message`, `Tool`
 - Response models: `MessagesResponse`, `TokenCountResponse`, `Usage`
@@ -108,8 +138,10 @@ AWS Bedrock / OpenAI / Gemini / Local LLM
 ### Provider Selection Logic
 
 Priority order (in `server.py:get_provider_type()`):
-1. If `LLM_PROVIDER` env var is set → use that provider (`bedrock`, `openai_compatible`, or `copilot`)
-2. Otherwise → use `copilot`
+1. If `LLM_PROVIDER` env var is set → use that provider (must be one of `registry.provider_names()`)
+2. Otherwise → use `registry.DEFAULT_PROVIDER` (`copilot`)
+
+At startup, `main.py` calls `validate_provider_config()`; a provider reporting invalid config (e.g. `openai_compatible` with no API key) exits the process immediately with a clear message instead of starting a server that would 500 on every request.
 
 ### Translation Layer Pattern
 
