@@ -33,12 +33,14 @@ export LLM_PROVIDER=copilot   # optional; copilot is default when unset
 # export COPILOT_MODEL=claude-sonnet-4.6
 claudecodex
 ```
+On first run, a GitHub device flow prompts you to authorize in your browser. The token is saved to `~/.copilot_token` for future use.
 
 **With AWS Bedrock:**
 ```bash
 export LLM_PROVIDER=bedrock
 claudecodex
 ```
+Log in with the AWS CLI for your profile first (`AWS_PROFILE`, default `saml`). `boto3` picks up those credentials automatically.
 
 **With Gemini:**
 ```bash
@@ -46,8 +48,6 @@ export OPENAICOMPATIBLE_API_KEY=your-gemini-key
 export LLM_PROVIDER=openai_compatible
 claudecodex
 ```
-
-On first Copilot run, a GitHub device flow will prompt you to authorize in your browser. The token is saved to `~/.copilot_token` for future use.
 
 ### 3. Connect Claude Code
 
