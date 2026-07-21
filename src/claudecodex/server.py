@@ -286,8 +286,12 @@ def stream_response_events(result: MessagesResponse):
 
 
 @app.post("/v1/messages")
-async def create_message(request: MessagesRequest):
-    """Handle /v1/messages endpoint - main Claude API compatibility."""
+def create_message(request: MessagesRequest):
+    """Handle /v1/messages endpoint - main Claude API compatibility.
+
+    Sync endpoint on purpose: providers use blocking HTTP clients, so FastAPI
+    runs this in its threadpool, letting concurrent requests proceed in parallel.
+    """
     start_time = time.time()
 
     try:
@@ -336,8 +340,8 @@ async def create_message(request: MessagesRequest):
 
 
 @app.post("/v1/messages/count_tokens")
-async def count_tokens(request: TokenCountRequest):
-    """Handle /v1/messages/count_tokens endpoint."""
+def count_tokens(request: TokenCountRequest):
+    """Handle /v1/messages/count_tokens endpoint (sync: providers block)."""
     start_time = time.time()
 
     try:
