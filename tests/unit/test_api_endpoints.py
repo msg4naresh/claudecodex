@@ -106,7 +106,9 @@ def test_bedrock_error_handling(mock_bedrock_client):
     response = client.post("/v1/messages", json=request_data)
     
     assert response.status_code == 500
-    assert "Bedrock error" in response.json()["detail"]
+    error_body = response.json()
+    assert error_body["type"] == "error"
+    assert "Bedrock error" in error_body["error"]["message"]
 
 
 def test_invalid_request_format():
