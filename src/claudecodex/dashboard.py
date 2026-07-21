@@ -5,6 +5,7 @@ Serves a self-contained HTML page at /dashboard and a JSON feed at
 No external assets, no build step - view it, hack it.
 """
 
+import html
 import json
 import os
 from pathlib import Path
@@ -230,3 +231,130 @@ setInterval(refresh, 3000);
 </body>
 </html>
 """
+
+
+_HOME_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Codex</title>
+<style>
+  :root {{
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --ink: #e6edf3; --ink-2: #9198a1; --ink-3: #6e7681;
+    --good: #3fb950; --accent: #58a6ff;
+  }}
+  * {{ box-sizing: border-box; margin: 0; }}
+  body {{
+    background: var(--bg); color: var(--ink);
+    font: 14px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+    padding: 32px 24px; max-width: 760px; margin: 0 auto;
+  }}
+  h1 {{ font-size: 20px; margin-bottom: 4px; }}
+  .sub {{ color: var(--ink-2); margin-bottom: 24px; }}
+  .status {{ display: inline-flex; align-items: center; gap: 6px;
+             background: var(--surface); border: 1px solid var(--border);
+             border-radius: 20px; padding: 4px 12px; font-size: 12px;
+             color: var(--ink-2); margin-bottom: 24px; }}
+  .dot {{ width: 7px; height: 7px; border-radius: 50%; background: var(--good); }}
+  h2 {{ font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
+        color: var(--ink-2); margin: 28px 0 8px; }}
+  .block {{ position: relative; background: var(--surface);
+            border: 1px solid var(--border); border-radius: 8px;
+            padding: 14px 16px; }}
+  pre {{ white-space: pre-wrap; word-break: break-all; font-size: 13px;
+         color: var(--ink); }}
+  .copy {{ position: absolute; top: 10px; right: 10px;
+           background: var(--bg); color: var(--ink-2);
+           border: 1px solid var(--border); border-radius: 6px;
+           padding: 3px 10px; font: inherit; font-size: 11px; cursor: pointer; }}
+  .copy:hover {{ color: var(--ink); border-color: var(--accent); }}
+  .copy.copied {{ color: var(--good); border-color: var(--good); }}
+  a {{ color: var(--accent); text-decoration: none; }}
+  a:hover {{ text-decoration: underline; }}
+  .links {{ margin-top: 28px; display: flex; gap: 16px; font-size: 13px; }}
+</style>
+</head>
+<body>
+<h1>Claude Codex</h1>
+<div class="sub">Anthropic-API-compatible proxy — {provider} / {model}</div>
+<div class="status"><span class="dot"></span> running on port {port}</div>
+
+<h2>Connect Claude Code to this proxy</h2>
+<div class="block">
+  <button class="copy" data-copy="connect">Copy</button>
+  <pre id="connect">export ANTHROPIC_BASE_URL=http://localhost:{port}
+export ANTHROPIC_AUTH_TOKEN=dummy</pre>
+</div>
+
+<h2>Switch provider (restart the proxy after)</h2>
+<div class="block">
+  <button class="copy" data-copy="provider">Copy</button>
+  <pre id="provider">{provider_switch_snippet}</pre>
+</div>
+
+<div class="links">
+  <a href="/dashboard">Live dashboard →</a>
+  <a href="/health">Health check</a>
+  <a href="https://github.com/msg4naresh/claudecodex#readme">Full README ↗</a>
+</div>
+
+<script>
+document.querySelectorAll(".copy").forEach(btn => {{
+  btn.addEventListener("click", () => {{
+    const target = document.getElementById(btn.dataset.copy);
+    const text = target.textContent;
+    const flash = label => {{
+      btn.textContent = label;
+      btn.classList.add("copied");
+      setTimeout(() => {{ btn.textContent = "Copy"; btn.classList.remove("copied"); }}, 1500);
+    }};
+    if (navigator.clipboard && navigator.clipboard.writeText) {{
+      navigator.clipboard.writeText(text).then(
+        () => flash("Copied"),
+        () => {{ selectText(target); flash("Selected"); }}
+      );
+    }} else {{
+      selectText(target);
+      flash("Selected");
+    }}
+  }});
+}});
+
+function selectText(node) {{
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}}
+</script>
+</body>
+</html>
+"""
+
+_PROVIDER_SWITCH_SNIPPETS = {
+    "copilot": "export LLM_PROVIDER=copilot\n"
+               "export COPILOT_MODEL=claude-sonnet-4.6   # or gpt-4o, claude-haiku-4.5",
+    "bedrock": "export LLM_PROVIDER=bedrock\n"
+               "export AWS_PROFILE=your-profile\n"
+               "export AWS_DEFAULT_REGION=us-east-1",
+    "openai_compatible": "export LLM_PROVIDER=openai_compatible\n"
+                          "export OPENAICOMPATIBLE_API_KEY=your-key",
+}
+
+
+def render_home(provider_info: Dict[str, Any], port: int) -> str:
+    """Render the proxy's landing page: live status + copy-paste setup commands."""
+    provider = provider_info.get("provider", "unknown")
+    model = provider_info.get("model", "unknown")
+    snippet = _PROVIDER_SWITCH_SNIPPETS.get(
+        provider, "export LLM_PROVIDER=copilot|bedrock|openai_compatible"
+    )
+    return _HOME_TEMPLATE.format(
+        provider=html.escape(provider),
+        model=html.escape(model),
+        port=port,
+        provider_switch_snippet=html.escape(snippet),
+    )

@@ -56,6 +56,19 @@ That's it! Claude Code will now send requests through your proxy.
 
 ---
 
+## Troubleshooting
+
+**`address already in use` on startup** — a previous `claudecodex` process is still holding the port. Find and stop it:
+
+```bash
+lsof -nP -iTCP:8082 -sTCP:LISTEN   # find what's using the port (swap 8082 for SERVER_PORT if changed)
+kill $(lsof -t -nP -iTCP:8082 -sTCP:LISTEN)   # stop it
+```
+
+Then restart `claudecodex` normally.
+
+---
+
 ## What You Can Do
 
 - **Watch it live** - open [http://localhost:8082/dashboard](http://localhost:8082/dashboard) for a real-time view: requests, errors, latency, token usage, tool calls

@@ -480,13 +480,10 @@ def count_tokens(request: TokenCountRequest):
 
 @app.get("/")
 async def root():
-    """Root endpoint with server info."""
-    provider_info = get_provider_info()
-    return {
-        "message": "Claude Code-Compatible Multi-Provider Server",
-        "provider": provider_info["provider"],
-        "model": provider_info["model"]
-    }
+    """Landing page: live status + copy-paste setup commands."""
+    from claudecodex.dashboard import render_home
+    port = int(os.environ.get("SERVER_PORT", 8082))
+    return HTMLResponse(render_home(get_provider_info(), port))
 
 
 @app.get("/dashboard")

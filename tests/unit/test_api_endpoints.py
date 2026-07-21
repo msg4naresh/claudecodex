@@ -23,6 +23,9 @@ from claudecodex.server import app
 def force_bedrock_provider(monkeypatch):
     """Ensure tests use the Bedrock provider to match mocks."""
     monkeypatch.setenv("LLM_PROVIDER", "bedrock")
+    monkeypatch.setenv(
+        "BEDROCK_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    )
 
 
 @pytest.fixture
@@ -174,13 +177,13 @@ def test_health_endpoint():
 
 
 def test_root_endpoint():
-    """Test root endpoint for server information."""
+    """Root endpoint renders the landing page with setup commands and model."""
     response = client.get("/")
-    
+
     assert response.status_code == 200
-    data = response.json()
-    assert "message" in data
-    assert "model" in data
+    assert response.headers["content-type"].startswith("text/html")
+    assert "ANTHROPIC_BASE_URL" in response.text
+    assert "us.anthropic.claude-haiku-4-5-20251001-v1:0" in response.text
 
 
 if __name__ == "__main__":
