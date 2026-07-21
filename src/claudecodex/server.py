@@ -17,8 +17,9 @@ import time
 import logging
 from pathlib import Path
 from typing import Literal
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from claudecodex.models import (
     MessagesRequest,
@@ -60,18 +61,24 @@ def get_provider_type() -> ProviderType:
     return "copilot"
 
 
+_provider_instances: dict = {}
+
+
 def get_provider() -> LLMProvider:
-    """Get provider instance based on configuration."""
+    """Get provider instance based on configuration (cached per provider type)."""
     provider_type = get_provider_type()
 
-    if provider_type == "bedrock":
-        return BedrockProvider()
-    elif provider_type == "openai_compatible":
-        return OpenAICompatibleProvider()
-    elif provider_type == "copilot":
-        return CopilotProvider()
-    else:
-        raise ValueError(f"Unsupported provider: {provider_type}")
+    if provider_type not in _provider_instances:
+        if provider_type == "bedrock":
+            _provider_instances[provider_type] = BedrockProvider()
+        elif provider_type == "openai_compatible":
+            _provider_instances[provider_type] = OpenAICompatibleProvider()
+        elif provider_type == "copilot":
+            _provider_instances[provider_type] = CopilotProvider()
+        else:
+            raise ValueError(f"Unsupported provider: {provider_type}")
+
+    return _provider_instances[provider_type]
 
 
 def call_llm_service(request: MessagesRequest) -> MessagesResponse:
@@ -171,25 +178,108 @@ app.add_middleware(
 )
 
 
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    """Log HTTP requests and responses."""
+@app.exception_handler(HTTPException)
+async def anthropic_error_handler(request: Request, exc: HTTPException):
+    """Return errors in Anthropic API error format."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "type": "error",
+            "error": {"type": "api_error", "message": str(exc.detail)}
+        }
+    )
 
-    # Capture request details for POST requests
-    if request.method == "POST":
-        body = await request.body()
-        if body:
-            try:
-                json.loads(body.decode())
-            except json.JSONDecodeError:
-                {"raw": body.decode()[:200]}
 
-    # Process request
-    response = await call_next(request)
+# === STREAMING ===
 
-    # The duration is calculated and used in the endpoint.
 
-    return response
+def sse_event(event: str, data: dict) -> str:
+    """Format a single server-sent event."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def stream_response_events(result: MessagesResponse):
+    """Emit a complete MessagesResponse as Anthropic-format SSE events."""
+    yield sse_event(
+        "message_start",
+        {
+            "type": "message_start",
+            "message": {
+                "id": result.id,
+                "type": "message",
+                "role": "assistant",
+                "model": result.model,
+                "content": [],
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {
+                    "input_tokens": result.usage.input_tokens,
+                    "output_tokens": 0
+                }
+            }
+        }
+    )
+
+    for index, block in enumerate(result.content):
+        if block.type == "text":
+            yield sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": index,
+                    "content_block": {"type": "text", "text": ""}
+                }
+            )
+            yield sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": index,
+                    "delta": {"type": "text_delta", "text": block.text}
+                }
+            )
+        elif block.type == "tool_use":
+            yield sse_event(
+                "content_block_start",
+                {
+                    "type": "content_block_start",
+                    "index": index,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": block.id,
+                        "name": block.name,
+                        "input": {}
+                    }
+                }
+            )
+            yield sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": index,
+                    "delta": {
+                        "type": "input_json_delta",
+                        "partial_json": json.dumps(block.input)
+                    }
+                }
+            )
+        yield sse_event(
+            "content_block_stop",
+            {"type": "content_block_stop", "index": index}
+        )
+
+    yield sse_event(
+        "message_delta",
+        {
+            "type": "message_delta",
+            "delta": {
+                "stop_reason": result.stop_reason,
+                "stop_sequence": result.stop_sequence
+            },
+            "usage": {"output_tokens": result.usage.output_tokens}
+        }
+    )
+    yield sse_event("message_stop", {"type": "message_stop"})
 
 
 # === API ENDPOINTS ===
@@ -217,6 +307,11 @@ async def create_message(request: MessagesRequest):
             provider_info=provider_info
         )
 
+        if request.stream:
+            return StreamingResponse(
+                stream_response_events(result),
+                media_type="text/event-stream"
+            )
         return result
 
     except Exception as e:

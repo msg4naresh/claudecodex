@@ -199,18 +199,26 @@ def convert_to_openai_messages(request: MessagesRequest) -> List[Dict[str, Any]]
                                     "type": "function",
                                     "function": {
                                         "name": block.name,
-                                        "arguments": str(block.input)
+                                        "arguments": json.dumps(block.input)
                                         if isinstance(block.input, dict)
                                         else block.input,
                                     },
                                 }
                             )
                         elif block.type == "tool_result":
-                            # Tool results become separate user messages in OpenAI
+                            # Tool results become separate tool messages in OpenAI
                             if isinstance(block.content, str):
                                 content_text = block.content
+                            elif isinstance(block.content, list):
+                                parts = []
+                                for item in block.content:
+                                    if isinstance(item, dict) and "text" in item:
+                                        parts.append(item["text"])
+                                    else:
+                                        parts.append(json.dumps(item, default=str))
+                                content_text = "\n".join(parts)
                             else:
-                                content_text = str(block.content)
+                                content_text = json.dumps(block.content, default=str)
 
                             openai_messages.append(
                                 {
@@ -294,6 +302,70 @@ def count_tokens_from_messages_openai(
     return total_tokens
 
 
+def aggregate_openai_stream(response) -> Dict[str, Any]:
+    """Assemble a complete OpenAI-format response from an SSE chunk stream.
+
+    Some providers (GitHub Copilot with Claude models) only return tool_calls
+    in streaming mode, so the full response must be rebuilt from deltas.
+    """
+    content_parts = []
+    tool_calls: Dict[int, Dict[str, Any]] = {}
+    finish_reason = None
+    usage: Dict[str, Any] = {}
+
+    for line in response.iter_lines():
+        if not line:
+            continue
+        line = line.decode() if isinstance(line, bytes) else line
+        if not line.startswith("data: "):
+            continue
+        data = line[len("data: "):]
+        if data == "[DONE]":
+            break
+        chunk = json.loads(data)
+
+        if chunk.get("usage"):
+            usage = chunk["usage"]
+
+        choices = chunk.get("choices") or []
+        if not choices:
+            continue
+        choice = choices[0]
+        if choice.get("finish_reason"):
+            finish_reason = choice["finish_reason"]
+
+        delta = choice.get("delta") or {}
+        if delta.get("content"):
+            content_parts.append(delta["content"])
+        for tool_call in delta.get("tool_calls") or []:
+            index = tool_call.get("index", 0)
+            entry = tool_calls.setdefault(
+                index,
+                {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+            )
+            if tool_call.get("id"):
+                entry["id"] = tool_call["id"]
+            function = tool_call.get("function") or {}
+            if function.get("name"):
+                entry["function"]["name"] = function["name"]
+            if function.get("arguments"):
+                entry["function"]["arguments"] += function["arguments"]
+
+    message: Dict[str, Any] = {
+        "role": "assistant",
+        "content": "".join(content_parts) or None
+    }
+    if tool_calls:
+        message["tool_calls"] = [tool_calls[i] for i in sorted(tool_calls)]
+
+    return {
+        "choices": [
+            {"message": message, "finish_reason": finish_reason or "stop"}
+        ],
+        "usage": usage
+    }
+
+
 def create_claude_response_from_openai(
     openai_response: Dict[str, Any], model_id: str
 ) -> MessagesResponse:
@@ -373,6 +445,7 @@ def call_openai_compatible_chat(
     request: MessagesRequest,
     client: Optional[requests.Session] = None,
     model_id: Optional[str] = None,
+    stream_upstream: bool = False,
 ) -> MessagesResponse:
     """Execute Claude API request via OpenAI-compatible provider."""
     try:
@@ -388,10 +461,11 @@ def call_openai_compatible_chat(
             "model": model_id,
             "messages": openai_messages,
             "max_tokens": request.max_tokens,
-            "temperature": request.temperature or 0.7,
         }
 
         # Add optional parameters
+        if request.temperature is not None:
+            payload["temperature"] = request.temperature
         if request.top_p is not None:
             payload["top_p"] = request.top_p
 
@@ -422,19 +496,22 @@ def call_openai_compatible_chat(
         )
         if request.tools:
             logger.debug(f"Tools: {len(request.tools)} functions")
-        if request.stream:
-            logger.warning("Streaming requested but not yet implemented for OpenAI")
 
         # Make the API call
-        response = openai_client.post(
-            f"{openai_client.base_url}/chat/completions", json=payload, timeout=120
-        )
-
-        # Check for HTTP errors
-        response.raise_for_status()
-
-        # Parse response
-        response_data = response.json()
+        if stream_upstream:
+            payload["stream"] = True
+            response = openai_client.post(
+                f"{openai_client.base_url}/chat/completions",
+                json=payload, timeout=120, stream=True
+            )
+            response.raise_for_status()
+            response_data = aggregate_openai_stream(response)
+        else:
+            response = openai_client.post(
+                f"{openai_client.base_url}/chat/completions", json=payload, timeout=120
+            )
+            response.raise_for_status()
+            response_data = response.json()
 
         # Convert response back to Claude format
         return create_claude_response_from_openai(response_data, model_id)

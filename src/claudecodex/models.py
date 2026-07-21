@@ -20,7 +20,7 @@ class ContentBlockText(BaseModel):
 
 
 class ContentBlockImage(BaseModel):
-    """Image content block for Claude API messages (not yet supported by Bedrock Converse)."""
+    """Image content block for Claude API messages."""
 
     type: Literal["image"]
     source: Dict[str, Any]
@@ -84,7 +84,7 @@ class MessagesRequest(BaseModel):
     system: Optional[Union[str, List[SystemContent]]] = None
     stop_sequences: Optional[List[str]] = None
     stream: Optional[bool] = False
-    temperature: Optional[float] = 0.7
+    temperature: Optional[float] = None
     top_p: Optional[float] = None
     top_k: Optional[int] = None
     metadata: Optional[Dict[str, Any]] = None

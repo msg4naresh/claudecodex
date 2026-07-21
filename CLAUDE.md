@@ -24,6 +24,7 @@ ruff check src --fix                        # Auto-fix issues
 pytest tests/ -v                            # All tests
 pytest tests/unit/ -v                       # Unit tests only (fast)
 pytest tests/integration/ -v                # Integration tests (requires API keys)
+RUN_E2E=1 pytest tests/e2e/ -v              # Provider/model matrix e2e (real API calls; skips providers without creds)
 pytest tests/unit/test_api_endpoints.py::TestMessages -v  # Single test class
 pytest tests/unit/test_api_endpoints.py::TestMessages::test_messages_endpoint -v  # Single test
 
@@ -103,9 +104,8 @@ AWS Bedrock / OpenAI / Gemini / Local LLM
 ### Provider Selection Logic
 
 Priority order (in `server.py:get_provider_type()`):
-1. If `LLM_PROVIDER` env var is set → use that provider
-2. If `OPENAI_API_KEY` env var exists → use `openai_compatible`
-3. Otherwise → use `bedrock`
+1. If `LLM_PROVIDER` env var is set → use that provider (`bedrock`, `openai_compatible`, or `copilot`)
+2. Otherwise → use `copilot`
 
 ### Translation Layer Pattern
 
@@ -121,7 +121,7 @@ This pattern makes adding new providers straightforward.
 
 **Provider Selection**
 ```bash
-LLM_PROVIDER=bedrock              # Force Bedrock provider (or openai_compatible)
+LLM_PROVIDER=bedrock              # bedrock, openai_compatible, or copilot (default: copilot)
 ```
 
 **Server Configuration**
@@ -138,9 +138,9 @@ BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-*  # Model ID (optional, auto-dete
 
 **OpenAI-Compatible** (for openai_compatible provider)
 ```bash
-OPENAI_API_KEY=your-key          # Required API key
-OPENAI_BASE_URL=endpoint-url     # Provider-specific endpoint
-OPENAI_MODEL=model-name          # Model identifier (default: gemini-2.0-flash)
+OPENAICOMPATIBLE_API_KEY=your-key      # Required API key
+OPENAICOMPATIBLE_BASE_URL=endpoint-url # Provider-specific endpoint
+OPENAI_MODEL=model-name                # Model identifier (default: gemini-2.0-flash)
 ```
 
 **Claude Code Integration**

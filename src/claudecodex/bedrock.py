@@ -9,6 +9,7 @@ This module consolidates all Bedrock-related functionality:
 """
 
 import os
+import base64
 import uuid
 import logging
 from typing import List, Dict, Any, Optional, Union
@@ -37,8 +38,14 @@ logger = logging.getLogger(__name__)
 # === BEDROCK CLIENT ===
 
 
+_bedrock_client = None
+
+
 def get_bedrock_client():
-    """Get configured AWS Bedrock Runtime client."""
+    """Get configured AWS Bedrock Runtime client (cached after first call)."""
+    global _bedrock_client
+    if _bedrock_client is not None:
+        return _bedrock_client
     try:
         # Get region from environment or use default
         region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
@@ -51,7 +58,10 @@ def get_bedrock_client():
         profile_name = os.environ.get("AWS_PROFILE", "saml")
         session = boto3.Session(profile_name=profile_name)
 
-        return session.client("bedrock-runtime", region_name=region, config=config)
+        _bedrock_client = session.client(
+            "bedrock-runtime", region_name=region, config=config
+        )
+        return _bedrock_client
 
     except (BotoCoreError, ClientError) as e:
         raise HTTPException(
@@ -169,7 +179,21 @@ def convert_to_bedrock_messages(request: MessagesRequest) -> List[Dict[str, Any]
                                 }
                             }
                         )
-                    # Note: Bedrock Converse doesn't support images yet, would need different handling
+                    elif block.type == "image":
+                        # Convert base64 image to Bedrock format
+                        source = block.source
+                        if source.get("type") == "base64" and "data" in source:
+                            image_format = source.get("media_type", "image/png").split("/")[-1]
+                            content_parts.append(
+                                {
+                                    "image": {
+                                        "format": image_format,
+                                        "source": {
+                                            "bytes": base64.b64decode(source["data"])
+                                        }
+                                    }
+                                }
+                            )
 
             if content_parts:
                 bedrock_messages.append({"role": msg.role, "content": content_parts})
@@ -247,7 +271,7 @@ def create_claude_response(
     usage_info = bedrock_response.get("usage", {})
 
     # Map Bedrock stop reasons to Claude format
-    bedrock_stop_reason = bedrock_response["output"].get("stopReason", "end_turn")
+    bedrock_stop_reason = bedrock_response.get("stopReason", "end_turn")
     stop_reason_mapping = {
         "end_turn": "end_turn",
         "tool_use": "tool_use",
@@ -284,12 +308,11 @@ def call_bedrock_converse(request: MessagesRequest) -> MessagesResponse:
         system_message = extract_system_message(request)
 
         # Build inference configuration
-        inference_config = {
-            "temperature": request.temperature or 0.7,
-            "maxTokens": request.max_tokens
-        }
+        inference_config = {"maxTokens": request.max_tokens}
 
         # Add optional parameters
+        if request.temperature is not None:
+            inference_config["temperature"] = request.temperature
         if request.top_p is not None:
             inference_config["topP"] = request.top_p
         if request.top_k is not None:

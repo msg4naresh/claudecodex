@@ -17,7 +17,7 @@ pip install .
 **With GitHub Copilot (default):**
 ```bash
 export LLM_PROVIDER=copilot   # optional; copilot is default when unset
-export COPILOT_MODEL=gpt-4o   # or claude-3.5-sonnet
+export COPILOT_MODEL=claude-sonnet-4.6   # or gpt-4o, claude-haiku-4.5
 claudecodex
 ```
 
@@ -242,7 +242,7 @@ OPENAICOMPATIBLE_BASE_URL=endpoint-url # provider-specific
 OPENAI_MODEL=model-name                # default: gemini-2.0-flash
 
 # GitHub Copilot provider
-COPILOT_MODEL=gpt-4o                   # default: gpt-4o (also: claude-3.5-sonnet)
+COPILOT_MODEL=claude-sonnet-4.6         # default: claude-sonnet-4.6 (also: gpt-4o, claude-haiku-4.5)
 COPILOT_OAUTH_TOKEN=your-token         # optional: skip device flow
 COPILOT_TOKEN_FILE=~/.copilot_token    # default: ~/.copilot_token
 

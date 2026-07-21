@@ -31,8 +31,8 @@ logger = logging.getLogger(__name__)
 
 
 def get_copilot_model() -> str:
-    """Return configured Copilot model (defaults to gpt-4o)."""
-    return os.environ.get("COPILOT_MODEL", "gpt-4o")
+    """Return configured Copilot model (defaults to claude-sonnet-4.6)."""
+    return os.environ.get("COPILOT_MODEL", "claude-sonnet-4.6")
 
 
 class CopilotProvider:
@@ -70,10 +70,13 @@ class CopilotProvider:
         model_id = get_copilot_model()
 
         try:
+            # Copilot only returns tool_calls for Claude models in streaming
+            # mode, so always stream upstream and aggregate.
             return call_openai_compatible_chat(
                 request,
                 client=client,
                 model_id=model_id,
+                stream_upstream=True,
             )
         except HTTPException as e:
             # If auth fails, invalidate cached session for next request
