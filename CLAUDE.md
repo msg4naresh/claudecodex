@@ -93,13 +93,17 @@ AWS Bedrock / OpenAI / Gemini / Local LLM
 - Response models: `MessagesResponse`, `TokenCountResponse`, `Usage`
 - Content block types: text, image, tool_use, tool_result
 
-**`src/claudecodex/logging_config.py`** (382 lines)
+**`src/claudecodex/logging_config.py`**
 - Comprehensive logging system with three tiers:
   1. **Console output** - Color-coded real-time summary
-  2. **logs/requests.log** - Detailed plain text request/response log
-  3. **logs/structured.jsonl** - Machine-readable JSON Lines for parsing
+  2. **logs/requests.log** - One-line REQ/RES summaries
+  3. **logs/requests_full/<id>.json** - Full request/response record per call
 - Tracks request timing, token counts, tool calls
-- Performance metrics (tokens per second, latency)
+
+**`src/claudecodex/dashboard.py`**
+- Live monitoring dashboard at `/dashboard` (self-contained HTML, no build step)
+- JSON feed at `/dashboard/data` reading `logs/requests_full/`
+- Stat tiles (requests, errors, latency, tokens, models) + filterable request table
 
 ### Provider Selection Logic
 
@@ -127,6 +131,7 @@ LLM_PROVIDER=bedrock              # bedrock, openai_compatible, or copilot (defa
 **Server Configuration**
 ```bash
 SERVER_PORT=8082                 # Server port (default: 8082)
+SERVER_HOST=127.0.0.1            # Bind address (default: localhost only)
 ```
 
 **AWS Bedrock** (if using bedrock provider)

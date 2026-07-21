@@ -366,6 +366,142 @@ def aggregate_openai_stream(response) -> Dict[str, Any]:
     }
 
 
+def _anthropic_sse(event: str, data: Dict[str, Any]) -> str:
+    """Format one Anthropic-style server-sent event."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+OPENAI_STOP_REASONS = {
+    "tool_calls": "tool_use",
+    "length": "max_tokens",
+    "stop": "end_turn",
+}
+
+
+def stream_openai_as_anthropic(response, model_id: str):
+    """Translate an OpenAI SSE chunk stream into Anthropic SSE events.
+
+    Text streams incrementally as upstream chunks arrive. Tool calls are
+    accumulated per OpenAI index (argument chunks for parallel tool calls can
+    interleave) and emitted as complete sequential blocks at the end - Claude
+    Code cannot execute a tool until its arguments are complete anyway.
+
+    The upstream response is always closed, including on early exit.
+    """
+    message_id = f"msg_{uuid.uuid4().hex[:24]}"
+    block_index = -1
+    text_open = False
+    tool_calls: Dict[int, Dict[str, str]] = {}   # openai index -> id/name/arguments
+    finish_reason = None
+    usage: Dict[str, Any] = {}
+
+    # One finally owns the upstream connection for the generator's whole
+    # lifetime: the client can cancel at ANY yield (GeneratorExit), including
+    # right after message_start.
+    try:
+        yield _anthropic_sse("message_start", {
+            "type": "message_start",
+            "message": {
+                "id": message_id, "type": "message", "role": "assistant",
+                "model": model_id, "content": [],
+                "stop_reason": None, "stop_sequence": None,
+                "usage": {"input_tokens": 0, "output_tokens": 0}
+            }
+        })
+
+        for line in response.iter_lines():
+            if not line:
+                continue
+            line = line.decode() if isinstance(line, bytes) else line
+            if not line.startswith("data: "):
+                continue
+            data = line[len("data: "):]
+            if data == "[DONE]":
+                break
+            chunk = json.loads(data)
+
+            if chunk.get("usage"):
+                usage = chunk["usage"]
+
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            choice = choices[0]
+            if choice.get("finish_reason"):
+                finish_reason = choice["finish_reason"]
+
+            delta = choice.get("delta") or {}
+
+            if delta.get("content"):
+                if not text_open:
+                    block_index += 1
+                    text_open = True
+                    yield _anthropic_sse("content_block_start", {
+                        "type": "content_block_start", "index": block_index,
+                        "content_block": {"type": "text", "text": ""}
+                    })
+                yield _anthropic_sse("content_block_delta", {
+                    "type": "content_block_delta", "index": block_index,
+                    "delta": {"type": "text_delta", "text": delta["content"]}
+                })
+
+            for tool_call in delta.get("tool_calls") or []:
+                entry = tool_calls.setdefault(
+                    tool_call.get("index", 0),
+                    {"id": "", "name": "", "arguments": ""}
+                )
+                if tool_call.get("id"):
+                    entry["id"] = tool_call["id"]
+                function = tool_call.get("function") or {}
+                if function.get("name"):
+                    entry["name"] = function["name"]
+                if function.get("arguments"):
+                    entry["arguments"] += function["arguments"]
+
+        if text_open:
+            yield _anthropic_sse(
+                "content_block_stop",
+                {"type": "content_block_stop", "index": block_index}
+            )
+
+        for openai_index in sorted(tool_calls):
+            entry = tool_calls[openai_index]
+            block_index += 1
+            yield _anthropic_sse("content_block_start", {
+                "type": "content_block_start", "index": block_index,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": entry["id"] or f"toolu_{uuid.uuid4().hex[:16]}",
+                    "name": entry["name"],
+                    "input": {}
+                }
+            })
+            if entry["arguments"]:
+                yield _anthropic_sse("content_block_delta", {
+                    "type": "content_block_delta", "index": block_index,
+                    "delta": {
+                        "type": "input_json_delta",
+                        "partial_json": entry["arguments"]
+                    }
+                })
+            yield _anthropic_sse(
+                "content_block_stop",
+                {"type": "content_block_stop", "index": block_index}
+            )
+
+        yield _anthropic_sse("message_delta", {
+            "type": "message_delta",
+            "delta": {
+                "stop_reason": OPENAI_STOP_REASONS.get(finish_reason, "end_turn"),
+                "stop_sequence": None
+            },
+            "usage": {"output_tokens": usage.get("completion_tokens", 0)}
+        })
+        yield _anthropic_sse("message_stop", {"type": "message_stop"})
+    finally:
+        response.close()
+
+
 def create_claude_response_from_openai(
     openai_response: Dict[str, Any], model_id: str
 ) -> MessagesResponse:
@@ -441,6 +577,51 @@ def create_claude_response_from_openai(
 # === OPENAI COMPATIBLE SERVICE ===
 
 
+def build_openai_payload(request: MessagesRequest, model_id: str) -> Dict[str, Any]:
+    """Build an OpenAI Chat Completions payload from a Claude request."""
+    openai_messages = convert_to_openai_messages(request)
+
+    payload = {
+        "model": model_id,
+        "messages": openai_messages,
+        "max_tokens": request.max_tokens,
+    }
+
+    # Add optional parameters
+    if request.temperature is not None:
+        payload["temperature"] = request.temperature
+    if request.top_p is not None:
+        payload["top_p"] = request.top_p
+
+    # Handle tool configuration
+    if request.tools:
+        payload["tools"] = convert_tools_to_openai(request.tools)
+
+        # Handle tool choice
+        if request.tool_choice:
+            if request.tool_choice.get("type") == "tool":
+                payload["tool_choice"] = {
+                    "type": "function",
+                    "function": {"name": request.tool_choice["name"]},
+                }
+            elif request.tool_choice.get("type") == "auto":
+                payload["tool_choice"] = "auto"
+            elif request.tool_choice.get("type") == "any":
+                payload["tool_choice"] = "required"  # OpenAI's equivalent
+
+    # Handle stop sequences
+    if request.stop_sequences:
+        payload["stop"] = request.stop_sequences
+
+    logger.debug(
+        f"OpenAI request: model={model_id}, messages={len(openai_messages)}"
+    )
+    if request.tools:
+        logger.debug(f"Tools: {len(request.tools)} functions")
+
+    return payload
+
+
 def call_openai_compatible_chat(
     request: MessagesRequest,
     client: Optional[requests.Session] = None,
@@ -453,49 +634,7 @@ def call_openai_compatible_chat(
         openai_client = client or get_openai_compatible_client()
         model_id = model_id or get_openai_compatible_model()
 
-        # Convert messages to OpenAI format
-        openai_messages = convert_to_openai_messages(request)
-
-        # Build request payload
-        payload = {
-            "model": model_id,
-            "messages": openai_messages,
-            "max_tokens": request.max_tokens,
-        }
-
-        # Add optional parameters
-        if request.temperature is not None:
-            payload["temperature"] = request.temperature
-        if request.top_p is not None:
-            payload["top_p"] = request.top_p
-
-        # Handle tool configuration
-        if request.tools:
-            openai_tools = convert_tools_to_openai(request.tools)
-            payload["tools"] = openai_tools
-
-            # Handle tool choice
-            if request.tool_choice:
-                if request.tool_choice.get("type") == "tool":
-                    payload["tool_choice"] = {
-                        "type": "function",
-                        "function": {"name": request.tool_choice["name"]},
-                    }
-                elif request.tool_choice.get("type") == "auto":
-                    payload["tool_choice"] = "auto"
-                elif request.tool_choice.get("type") == "any":
-                    payload["tool_choice"] = "required"  # OpenAI's equivalent
-
-        # Handle stop sequences
-        if request.stop_sequences:
-            payload["stop"] = request.stop_sequences
-
-        # Log request details (similar to bedrock_service pattern)
-        logger.debug(
-            f"OpenAI request: model={model_id}, messages={len(openai_messages)}"
-        )
-        if request.tools:
-            logger.debug(f"Tools: {len(request.tools)} functions")
+        payload = build_openai_payload(request, model_id)
 
         # Make the API call
         if stream_upstream:
@@ -554,9 +693,11 @@ def call_openai_compatible_chat(
                     status_code=e.response.status_code, detail=error_message
                 )
         else:
+            # Timeouts and connection failures are retryable: surface as 529
+            # (overloaded) so Claude Code's retry logic kicks in.
             error_message = f"OpenAI connection error: {str(e)}"
             logger.error(error_message)
-            raise HTTPException(status_code=500, detail=error_message)
+            raise HTTPException(status_code=529, detail=error_message)
 
     except json.JSONDecodeError as e:
         error_message = f"Failed to parse OpenAI response: {str(e)}"

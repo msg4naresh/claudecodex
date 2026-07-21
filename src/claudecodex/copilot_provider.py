@@ -25,6 +25,8 @@ from claudecodex.openai_compatible import (
     get_openai_compatible_client,
     call_openai_compatible_chat,
     count_tokens_from_messages_openai,
+    build_openai_payload,
+    stream_openai_as_anthropic,
 )
 
 logger = logging.getLogger(__name__)
@@ -86,6 +88,51 @@ class CopilotProvider:
                     self._client = None
                     self._session_token = None
             raise
+
+    def completion_stream(self, request: MessagesRequest):
+        """Stream a completion as Anthropic SSE events, incrementally."""
+        client = self._get_client()
+        model_id = get_copilot_model()
+
+        payload = build_openai_payload(request, model_id)
+        payload["stream"] = True
+
+        try:
+            response = client.post(
+                f"{client.base_url}/chat/completions",
+                json=payload, timeout=120, stream=True
+            )
+        except (requests.exceptions.Timeout,
+                requests.exceptions.ConnectionError) as e:
+            # Retryable transport failure: map to 529 (overloaded) like the
+            # non-streaming path so Claude Code retries
+            raise HTTPException(
+                status_code=529, detail=f"Copilot connection error: {e}"
+            ) from e
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(
+                status_code=500, detail=f"Copilot request failed: {e}"
+            ) from e
+
+        if response.status_code == 401:
+            # Invalidate cached session so the next request re-authenticates
+            self._auth.invalidate_session()
+            with self._client_lock:
+                self._client = None
+                self._session_token = None
+        if response.status_code >= 400:
+            try:
+                detail = response.text[:200]
+            finally:
+                response.close()
+            passthrough = (400, 401, 403, 404, 413, 429)
+            raise HTTPException(
+                status_code=response.status_code
+                if response.status_code in passthrough else 529,
+                detail=f"Copilot error: {detail}"
+            )
+
+        return stream_openai_as_anthropic(response, model_id)
 
     def count_tokens(self, request: TokenCountRequest) -> TokenCountResponse:
         """Estimate token count using the OpenAI-compatible heuristic."""

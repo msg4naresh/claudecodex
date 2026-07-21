@@ -37,6 +37,8 @@ def main():
 
     # Get port from environment variable, fallback to 8082
     port = int(os.getenv("SERVER_PORT", 8082))
+    # Bind localhost only by default; set SERVER_HOST=0.0.0.0 to expose
+    host = os.getenv("SERVER_HOST", "127.0.0.1")
 
     # Setup logging for main entry point
     logging.basicConfig(level=logging.INFO)
@@ -47,7 +49,7 @@ def main():
     print(f"Provider: {provider_info['provider']} | Model: {provider_info['model']}")
 
     # Start the server
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+    uvicorn.run(app, host=host, port=port, log_level="info")
 
 
 if __name__ == "__main__":

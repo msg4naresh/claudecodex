@@ -94,6 +94,33 @@ def test_create_message_success(mock_bedrock_client):
     assert_successful_response(response, "Hello! How can I help you today?")
 
 
+def test_stream_failure_emits_error_event(monkeypatch):
+    """A provider stream that dies mid-flight yields an SSE error event."""
+    from claudecodex import server
+
+    class BrokenStreamProvider:
+        def completion_stream(self, request):
+            def gen():
+                yield 'event: message_start\ndata: {"type": "message_start"}\n\n'
+                raise ConnectionError("upstream vanished")
+            return gen()
+
+    monkeypatch.setitem(server._provider_instances, "bedrock",
+                        BrokenStreamProvider())
+
+    request_data = {
+        "model": "m", "max_tokens": 10, "stream": True,
+        "messages": [{"role": "user", "content": "hi"}]
+    }
+    response = client.post("/v1/messages", json=request_data)
+
+    # Headers were already sent as 200; the failure arrives as an error event
+    assert response.status_code == 200
+    assert "event: message_start" in response.text
+    assert "event: error" in response.text
+    assert "upstream vanished" in response.text
+
+
 def test_bedrock_error_handling(mock_bedrock_client):
     """Test error handling when AWS Bedrock API fails."""
     from botocore.exceptions import ClientError
@@ -105,9 +132,11 @@ def test_bedrock_error_handling(mock_bedrock_client):
     request_data = {"model": "invalid-model", "max_tokens": 1000, "messages": [{"role": "user", "content": "Hello"}]}
     response = client.post("/v1/messages", json=request_data)
     
-    assert response.status_code == 500
+    # ValidationException maps to 400 / invalid_request_error
+    assert response.status_code == 400
     error_body = response.json()
     assert error_body["type"] == "error"
+    assert error_body["error"]["type"] == "invalid_request_error"
     assert "Bedrock error" in error_body["error"]["message"]
 
 

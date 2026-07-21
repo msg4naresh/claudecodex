@@ -1,8 +1,17 @@
 # Claude Codex
 
-Monitor and intercept Claude Code API requests with multi-provider LLM support.
+[![CI](https://github.com/msg4naresh/claudecodex/actions/workflows/ci.yml/badge.svg)](https://github.com/msg4naresh/claudecodex/actions/workflows/ci.yml)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+![License](https://img.shields.io/github/license/msg4naresh/claudecodex)
 
-A hackable Claude API proxy for monitoring AI agent requests and connecting multiple LLM providers. No complex AI frameworks - just FastAPI, requests, and clean code you can easily modify.
+**Run Claude Code on any LLM backend — and see every request it makes.**
+
+Claude Codex is a transparent, Anthropic-API-compatible proxy. Point Claude Code at it and your agent sessions run on AWS Bedrock, GitHub Copilot, Gemini, or any OpenAI-compatible endpoint — with full tool-use agent loops, SSE streaming, and a color-coded live log of every request, tool call, and token count.
+
+
+- **Full protocol fidelity** — real Claude Code sessions work end to end: streaming SSE events, multi-turn tool loops, Anthropic error types that preserve client retry behavior
+- **Provider-verified** — an e2e test matrix runs every provider/model pair through completion, tool round-trips, streaming, and token counting (it has caught real upstream API quirks, like GitHub Copilot omitting tool calls in non-streaming responses)
+- **Hackable by design** — no AI frameworks; FastAPI + requests + one `LLMProvider` protocol. Adding a provider is one file.
 
 ## Quick Start
 
@@ -48,6 +57,7 @@ That's it! Claude Code will now send requests through your proxy.
 
 ## What You Can Do
 
+- **Watch it live** - open [http://localhost:8082/dashboard](http://localhost:8082/dashboard) for a real-time view: requests, errors, latency, token usage, tool calls
 - **Monitor requests** - See all Claude Code API calls in real-time with color-coded logs
 - **Switch providers** - Run the same workflow on Claude, GPT-4, Gemini, or local models
 - **Debug workflows** - Watch which tools get called and when
@@ -230,6 +240,7 @@ pip install -e .  # Install in editable mode
 # Provider selection
 LLM_PROVIDER=bedrock|openai_compatible|copilot  # default: copilot
 SERVER_PORT=8082                       # default: 8082
+SERVER_HOST=127.0.0.1                  # default: 127.0.0.1 (localhost only; 0.0.0.0 exposes to network)
 
 # Bedrock provider
 AWS_PROFILE=your-profile               # default: saml

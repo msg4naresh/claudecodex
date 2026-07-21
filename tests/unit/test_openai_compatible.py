@@ -486,6 +486,200 @@ class TestProviderSpecificBehavior:
         assert len(openai_messages) == 1
 
 
+class FakeStreamResponse:
+    """Minimal stand-in for requests.Response with an SSE body."""
+
+    def __init__(self, chunks, raise_after=None):
+        import json as _json
+        self._lines = [f"data: {_json.dumps(c)}".encode() for c in chunks]
+        self._lines.append(b"data: [DONE]")
+        self._raise_after = raise_after
+        self.closed = False
+
+    def iter_lines(self):
+        for i, line in enumerate(self._lines):
+            if self._raise_after is not None and i >= self._raise_after:
+                raise ConnectionError("upstream dropped")
+            yield line
+
+    def close(self):
+        self.closed = True
+
+
+class TestStreamOpenaiAsAnthropic:
+    """Incremental OpenAI -> Anthropic SSE translation."""
+
+    def _events(self, chunks):
+        import json as _json
+        from claudecodex.openai_compatible import stream_openai_as_anthropic
+
+        raw = list(stream_openai_as_anthropic(FakeStreamResponse(chunks), "m"))
+        parsed = []
+        for event in raw:
+            lines = event.strip().split("\n")
+            name = lines[0].split("event: ", 1)[1]
+            data = _json.loads(lines[1].split("data: ", 1)[1])
+            parsed.append((name, data))
+        return parsed
+
+    def test_text_deltas_stream_incrementally(self):
+        events = self._events([
+            {"choices": [{"delta": {"content": "Hel"}}]},
+            {"choices": [{"delta": {"content": "lo"}}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}],
+             "usage": {"completion_tokens": 2, "prompt_tokens": 5}},
+        ])
+
+        names = [n for n, _ in events]
+        assert names == [
+            "message_start", "content_block_start",
+            "content_block_delta", "content_block_delta",
+            "content_block_stop", "message_delta", "message_stop",
+        ]
+        deltas = [d["delta"]["text"] for n, d in events
+                  if n == "content_block_delta"]
+        assert deltas == ["Hel", "lo"]
+        message_delta = dict(events)["message_delta"]
+        assert message_delta["delta"]["stop_reason"] == "end_turn"
+        assert message_delta["usage"]["output_tokens"] == 2
+
+    def test_tool_call_after_text_gets_new_block(self):
+        events = self._events([
+            {"choices": [{"delta": {"content": "Sure."}}]},
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "id": "t1", "type": "function",
+                 "function": {"name": "get_weather"}}]}}]},
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"city": '}}]}}]},
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '"Paris"}'}}]}}]},
+            {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+        ])
+
+        starts = [d for n, d in events if n == "content_block_start"]
+        assert starts[0]["content_block"]["type"] == "text"
+        assert starts[1]["content_block"]["type"] == "tool_use"
+        assert starts[1]["content_block"]["name"] == "get_weather"
+        assert starts[1]["index"] == 1
+
+        partials = "".join(
+            d["delta"]["partial_json"] for n, d in events
+            if n == "content_block_delta"
+            and d["delta"]["type"] == "input_json_delta"
+        )
+        assert partials == '{"city": "Paris"}'
+        assert dict(events)["message_delta"]["delta"]["stop_reason"] == "tool_use"
+
+    def test_parallel_tool_calls_with_interleaved_arguments(self):
+        """Two tools whose ids/names and argument chunks arrive interleaved."""
+        events = self._events([
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "id": "tool_a", "type": "function",
+                 "function": {"name": "search"}},
+                {"index": 1, "id": "tool_b", "type": "function",
+                 "function": {"name": "weather"}}]}}]},
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": '{"query"'}},
+                {"index": 1, "function": {"arguments": '{"city"'}}]}}]},
+            {"choices": [{"delta": {"tool_calls": [
+                {"index": 0, "function": {"arguments": ':"x"}'}},
+                {"index": 1, "function": {"arguments": ':"London"}'}}]}}]},
+            {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+        ])
+
+        starts = [d for n, d in events if n == "content_block_start"]
+        assert len(starts) == 2, starts
+        assert [(s["content_block"]["id"], s["content_block"]["name"])
+                for s in starts] == [("tool_a", "search"), ("tool_b", "weather")]
+        assert [s["index"] for s in starts] == [0, 1]
+
+        deltas = [d for n, d in events if n == "content_block_delta"]
+        args_by_index = {d["index"]: d["delta"]["partial_json"] for d in deltas}
+        assert args_by_index == {0: '{"query":"x"}', 1: '{"city":"London"}'}
+        stops = [d for n, d in events if n == "content_block_stop"]
+        assert len(stops) == 2
+
+    def test_upstream_response_closed_on_completion_and_error(self):
+        from claudecodex.openai_compatible import stream_openai_as_anthropic
+
+        # Normal completion closes the upstream response
+        resp = FakeStreamResponse([{"choices": [{"delta": {"content": "hi"},
+                                                 "finish_reason": "stop"}]}])
+        list(stream_openai_as_anthropic(resp, "m"))
+        assert resp.closed
+
+        # Mid-stream failure still closes it
+        resp = FakeStreamResponse(
+            [{"choices": [{"delta": {"content": "hi"}}]}] * 3, raise_after=1)
+        with pytest.raises(ConnectionError):
+            list(stream_openai_as_anthropic(resp, "m"))
+        assert resp.closed
+
+    def test_response_closed_when_cancelled_after_message_start(self):
+        from claudecodex.openai_compatible import stream_openai_as_anthropic
+
+        resp = FakeStreamResponse([])
+        stream = stream_openai_as_anthropic(resp, "m")
+        next(stream)      # receive message_start
+        stream.close()    # client cancels immediately
+        assert resp.closed
+
+
+class TestCopilotStreamTransportErrors:
+    """completion_stream maps transport failures to Anthropic retry semantics."""
+
+    def _provider_with_client(self, client):
+        from claudecodex.copilot_provider import CopilotProvider
+
+        provider = CopilotProvider()
+        provider._get_client = lambda: client
+        return provider
+
+    def _request(self):
+        return MessagesRequest(
+            model="m", max_tokens=10,
+            messages=[Message(role="user", content="hi")]
+        )
+
+    def test_timeout_maps_to_529(self):
+        import requests as _requests
+
+        client = MagicMock()
+        client.base_url = "https://api.example"
+        client.post.side_effect = _requests.exceptions.Timeout("timed out")
+
+        provider = self._provider_with_client(client)
+        with pytest.raises(HTTPException) as exc_info:
+            provider.completion_stream(self._request())
+        assert exc_info.value.status_code == 529
+
+    def test_connection_error_maps_to_529(self):
+        import requests as _requests
+
+        client = MagicMock()
+        client.base_url = "https://api.example"
+        client.post.side_effect = _requests.exceptions.ConnectionError("refused")
+
+        provider = self._provider_with_client(client)
+        with pytest.raises(HTTPException) as exc_info:
+            provider.completion_stream(self._request())
+        assert exc_info.value.status_code == 529
+
+    def test_http_error_response_is_closed(self):
+        client = MagicMock()
+        client.base_url = "https://api.example"
+        error_response = MagicMock()
+        error_response.status_code = 503
+        error_response.text = "service unavailable"
+        client.post.return_value = error_response
+
+        provider = self._provider_with_client(client)
+        with pytest.raises(HTTPException) as exc_info:
+            provider.completion_stream(self._request())
+        assert exc_info.value.status_code == 529  # 503 not passed through
+        error_response.close.assert_called_once()
+
+
 if __name__ == "__main__":
     # Allow running tests directly
     pytest.main([__file__, "-v"])

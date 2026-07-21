@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Literal
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from claudecodex.models import (
     MessagesRequest,
@@ -168,14 +168,32 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Add CORS middleware
+# CORS: same-origin only. The proxy is consumed by non-browser clients
+# (Claude Code) and the dashboard is served from this origin; a wildcard
+# here would let arbitrary websites read dashboard data via the browser.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:8082",
+        "http://127.0.0.1:8082",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# HTTP status -> Anthropic error type (drives Claude Code's retry behavior)
+ANTHROPIC_ERROR_TYPES = {
+    400: "invalid_request_error",
+    401: "authentication_error",
+    403: "permission_error",
+    404: "not_found_error",
+    413: "request_too_large",
+    429: "rate_limit_error",
+    500: "api_error",
+    529: "overloaded_error",
+}
 
 
 @app.exception_handler(HTTPException)
@@ -185,7 +203,10 @@ async def anthropic_error_handler(request: Request, exc: HTTPException):
         status_code=exc.status_code,
         content={
             "type": "error",
-            "error": {"type": "api_error", "message": str(exc.detail)}
+            "error": {
+                "type": ANTHROPIC_ERROR_TYPES.get(exc.status_code, "api_error"),
+                "message": str(exc.detail)
+            }
         }
     )
 
@@ -295,7 +316,77 @@ def create_message(request: MessagesRequest):
     start_time = time.time()
 
     try:
-        result = call_llm_service(request)
+        provider = get_provider()
+
+        # True incremental streaming when the provider supports it
+        if request.stream and hasattr(provider, "completion_stream"):
+            event_stream = provider.completion_stream(request)
+
+            def logged_stream():
+                # Accumulate a response summary from our own events for logging
+                text_parts, tool_names = [], []
+                usage_out, stop_reason = 0, None
+                stream_error = None
+                try:
+                    try:
+                        for event in event_stream:
+                            yield event
+                            try:
+                                payload = json.loads(event.split("data: ", 1)[1])
+                            except (IndexError, json.JSONDecodeError):
+                                continue
+                            ptype = payload.get("type")
+                            if (ptype == "content_block_delta"
+                                    and payload["delta"].get("type") == "text_delta"):
+                                text_parts.append(payload["delta"]["text"])
+                            elif (ptype == "content_block_start"
+                                    and payload["content_block"]["type"] == "tool_use"):
+                                tool_names.append(
+                                    payload["content_block"].get("name", "?"))
+                            elif ptype == "message_delta":
+                                usage_out = payload.get("usage", {}) \
+                                    .get("output_tokens", 0)
+                                stop_reason = payload["delta"].get("stop_reason")
+                    except Exception as e:
+                        # Headers are already sent (200); surface the failure
+                        # as an Anthropic-style SSE error event.
+                        stream_error = str(e)
+                        logger.error(f"Stream failed mid-flight: {stream_error}")
+                        yield sse_event("error", {
+                            "type": "error",
+                            "error": {"type": "api_error", "message": stream_error}
+                        })
+                finally:
+                    content = []
+                    if text_parts:
+                        content.append(
+                            {"type": "text", "text": "".join(text_parts)[:500]}
+                        )
+                    content.extend(
+                        {"type": "tool_use", "name": name} for name in tool_names
+                    )
+                    log_request_response(
+                        request_logger=request_logger,
+                        main_logger=logger,
+                        endpoint="/v1/messages",
+                        request_data=request.model_dump(),
+                        response_data={
+                            "streamed": True,
+                            "content": content,
+                            "stop_reason": stop_reason,
+                            "usage": {"input_tokens": 0, "output_tokens": usage_out},
+                        },
+                        duration=time.time() - start_time,
+                        status_code=500 if stream_error else 200,
+                        error=stream_error,
+                        provider_info=get_provider_info()
+                    )
+
+            return StreamingResponse(
+                logged_stream(), media_type="text/event-stream"
+            )
+
+        result = provider.completion(request)
         duration = time.time() - start_time
 
         # Log successful request/response
@@ -312,6 +403,7 @@ def create_message(request: MessagesRequest):
         )
 
         if request.stream:
+            # Fallback: providers without completion_stream get replay SSE
             return StreamingResponse(
                 stream_response_events(result),
                 media_type="text/event-stream"
@@ -321,6 +413,7 @@ def create_message(request: MessagesRequest):
     except Exception as e:
         duration = time.time() - start_time
         error_msg = str(e)
+        status_code = e.status_code if isinstance(e, HTTPException) else 500
 
         # Log failed request
         provider_info = get_provider_info()
@@ -331,7 +424,7 @@ def create_message(request: MessagesRequest):
             request_data=request.model_dump(),
             response_data={},
             duration=duration,
-            status_code=500,
+            status_code=status_code,
             error=error_msg,
             provider_info=provider_info
         )
@@ -366,6 +459,7 @@ def count_tokens(request: TokenCountRequest):
     except Exception as e:
         duration = time.time() - start_time
         error_msg = str(e)
+        status_code = e.status_code if isinstance(e, HTTPException) else 500
 
         # Log failed token count
         provider_info = get_provider_info()
@@ -376,7 +470,7 @@ def count_tokens(request: TokenCountRequest):
             request_data=request.model_dump(),
             response_data={},
             duration=duration,
-            status_code=500,
+            status_code=status_code,
             error=error_msg,
             provider_info=provider_info
         )
@@ -393,6 +487,20 @@ async def root():
         "provider": provider_info["provider"],
         "model": provider_info["model"]
     }
+
+
+@app.get("/dashboard")
+async def dashboard():
+    """Live monitoring dashboard (self-contained HTML)."""
+    from claudecodex.dashboard import DASHBOARD_HTML
+    return HTMLResponse(DASHBOARD_HTML)
+
+
+@app.get("/dashboard/data")
+def dashboard_data(limit: int = 200):
+    """JSON feed for the dashboard: recent request summaries, newest first."""
+    from claudecodex.dashboard import read_recent_requests
+    return read_recent_requests(limit)
 
 
 @app.get("/health")

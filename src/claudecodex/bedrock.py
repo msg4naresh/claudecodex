@@ -317,6 +317,8 @@ def call_bedrock_converse(request: MessagesRequest) -> MessagesResponse:
             inference_config["topP"] = request.top_p
         if request.top_k is not None:
             inference_config["topK"] = request.top_k
+        if request.stop_sequences:
+            inference_config["stopSequences"] = request.stop_sequences
 
         # Prepare Bedrock Converse request
         converse_params = {
@@ -368,9 +370,25 @@ def call_bedrock_converse(request: MessagesRequest) -> MessagesResponse:
         return create_claude_response(response, model_id)
 
     except ClientError as e:
-        error_message = e.response.get("Error", {}).get("Message", str(e))
-        logger.error(f"Bedrock error: {error_message}")
-        raise HTTPException(status_code=500, detail=f"Bedrock error: {error_message}")
+        error_info = e.response.get("Error", {})
+        error_code = error_info.get("Code", "")
+        error_message = error_info.get("Message", str(e))
+        logger.error(f"Bedrock error ({error_code}): {error_message}")
+        # Map AWS error codes so Claude Code's retry logic works
+        status_map = {
+            "ThrottlingException": 429,
+            "TooManyRequestsException": 429,
+            "ValidationException": 400,
+            "AccessDeniedException": 403,
+            "ResourceNotFoundException": 404,
+            "ServiceUnavailableException": 529,
+            "ModelTimeoutException": 529,
+            "ModelNotReadyException": 529,
+        }
+        raise HTTPException(
+            status_code=status_map.get(error_code, 500),
+            detail=f"Bedrock error: {error_message}"
+        )
 
     except Exception as e:
         logger.exception(f"Unexpected error: {str(e)}")

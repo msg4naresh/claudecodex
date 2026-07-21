@@ -92,14 +92,22 @@ class CopilotAuth:
             oauth_token = self._resolve_oauth_token()
 
             try:
-                resp = requests.get(
-                    COPILOT_TOKEN_ENDPOINT,
-                    headers={
-                        **COPILOT_HEADERS,
-                        "Authorization": f"token {oauth_token}",
-                    },
-                    timeout=self._HTTP_TIMEOUT_SECONDS,
-                )
+                # GitHub's token endpoint intermittently returns 5xx; retry briefly
+                for attempt in range(3):
+                    resp = requests.get(
+                        COPILOT_TOKEN_ENDPOINT,
+                        headers={
+                            **COPILOT_HEADERS,
+                            "Authorization": f"token {oauth_token}",
+                        },
+                        timeout=self._HTTP_TIMEOUT_SECONDS,
+                    )
+                    if resp.status_code < 500 or attempt == 2:
+                        break
+                    logger.warning(
+                        f"Copilot token endpoint returned {resp.status_code}, retrying"
+                    )
+                    time.sleep(1 + attempt)
             except requests.exceptions.Timeout as e:
                 raise TimeoutError("Timed out fetching Copilot session token") from e
             except requests.exceptions.ConnectionError as e:
