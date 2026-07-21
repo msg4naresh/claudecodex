@@ -260,6 +260,8 @@ _HOME_TEMPLATE = """<!doctype html>
   .dot {{ width: 7px; height: 7px; border-radius: 50%; background: var(--good); }}
   h2 {{ font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
         color: var(--ink-2); margin: 28px 0 8px; }}
+  .hint {{ color: var(--ink-2); font-size: 12px; margin: 0 0 8px; }}
+  .hint code {{ color: var(--ink); }}
   .block {{ position: relative; background: var(--surface);
             border: 1px solid var(--border); border-radius: 8px;
             padding: 14px 16px; }}
@@ -282,10 +284,11 @@ _HOME_TEMPLATE = """<!doctype html>
 <div class="status"><span class="dot"></span> running on port {port}</div>
 
 <h2>Connect Claude Code to this proxy</h2>
+<div class="hint">Export these in your shell <strong>before</strong> starting a <code>claude</code> session:</div>
 <div class="block">
   <button class="copy" data-copy="connect">Copy</button>
   <pre id="connect">export ANTHROPIC_BASE_URL=http://localhost:{port}
-export ANTHROPIC_AUTH_TOKEN=dummy</pre>
+export ANTHROPIC_AUTH_TOKEN=dummy   # any non-empty string; skips the login prompt</pre>
 </div>
 
 <h2>Switch provider (restart the proxy after)</h2>
